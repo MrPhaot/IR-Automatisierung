@@ -11,4 +11,7 @@ The controller targets `component.ir_remote_control` and currently supports:
 - `inspect`
 - `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m]`
 
+For OpenOS installation, prefer `lua programs/ir_install.lua`.
+Why: OpenOS already ships a different `install` command, so the project uses a distinct entrypoint to avoid collisions.
+
 See `docs/README.md` for the documentation map and `AGENTS.md` for working rules for future sessions.

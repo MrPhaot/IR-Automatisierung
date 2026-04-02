@@ -26,6 +26,10 @@ return {
       url = "https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/main/immersive_railroading/programs/install.lua",
     },
     {
+      path = "programs/ir_install.lua",
+      url = "https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/main/immersive_railroading/programs/ir_install.lua",
+    },
+    {
       path = "programs/install_manifest.lua",
       url = "https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/main/immersive_railroading/programs/install_manifest.lua",
     },

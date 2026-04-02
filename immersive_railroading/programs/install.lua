@@ -94,13 +94,20 @@ local function main()
   io.write(("installed version %s\n"):format(manifest.version))
 end
 
-local argv = rawget(_G, "arg") or {}
-
-if type(argv[0]) == "string" and argv[0]:match("install%.lua$") then
-  main()
+local function can_auto_run()
+  local ok_shell = pcall(require, "shell")
+  local ok_filesystem = pcall(require, "filesystem")
+  return ok_shell and ok_filesystem
 end
 
-return {
+local exports = {
+  main = main,
   validate_manifest = validate_manifest,
   validate_relative_path = validate_relative_path,
 }
+
+if ... ~= "__module__" and can_auto_run() then
+  main()
+end
+
+return exports
