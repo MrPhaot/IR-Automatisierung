@@ -1,0 +1,22 @@
+Du bist ein Experte in Lua und OpenComputers in der Minecraft-Version 1.7.10. Du kennst dich außerdem sehr gut mit Immersive Railroading sowie seinen Automatitierungsmöglichkeiten aus. Ich will ein Programm schreiben, das mir hilft, Züge zu automatisieren (u.a. Stationen und Signale). Als Grundlage dafür erstellst du Folgendes:
+
+1. Ein Programm, das die Züge mit einem PID-Regler steuert. Man hat einen Zugriff auf die Position, (maximale) Geschwindigkeit, Gewicht, Pferdekraft des Zuges (s. Screenshot). Dies muss eine einzige Datei sein. Stelle daraus die Möglichkeiten für den Integral/Ableitung, damit sie sich nicht auf magische Zahlen stützen. Versuche auch ein Äquivalent davon für den Propotionalanteil zu finden.
+2. Skelettdateien anderer Programme mit TODOs (prägnant, zur Erinnerung und Planung **für mich**).
+3. Ein AGENTS.md und ein Dokumentationsordner für künftige Dokumentationen (um Progressive Disclosure zu fördern). Folge den Best Practices und orientiere dich auch an meinem vorherigen Projekt unter "https://github.com/oleksandr-k73/Kryptografie-Projekt" (auch ein persönlicher plans-Ordner wie da ist erwünscht).
+4. Eine Anleitung, wie ich am besten diese(s) Programm(e) im Spiel herunterlade und ausführe. Plane ggf. dafür Infrastruktur.
+
+Beachte stets folgendes:
+
+- Kommentare auf wichtigen Stellen hinterlassen, mit Fokus auf "Warum?". Nur dann das "Was?" beantworten, wenn es nicht aus dem Code ersichtlich ist.
+- Diesen Projekt werde ich über mehrere Sessionen mit separaten Agenten erarbeiten. Daher ist Erweiterbarkeit und Agent-gerechte (auch tokensparende) Dokumentation sehr wichtig.   
+    - Diesen Plan will ich in einer anderen Session implementieren, daher brauche ich außerdem einen Prompt (im Einklang mit Context-Engineering)
+- Frage IMMER nach, wenn etwas unklar ist oder dir Informationen fehlen. Denke nie etwas aus; bitte keine Halluzinationen.
+- In diesem Ordner (immersive_railroading) kannst du den Projekt erstellen. Der tatsächliche Minecraft-Instanz-Ordner (~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft) ist NUR ZUM LESEN. DORT NICHTS SCHREIBEN.
+- Du kannst gerne nachfragen, falls du Bibliotheken/Abhängigkeiten zum Testen, Sandbox, Syntaxcheck, Linting etc. brauchst.
+
+Gib mir den endgültigen Plan nur dann ab, wenn:
+1. alle Anforderungen erfüllt sind und keine Unklarheiten herrschen,
+2. der Plan ist fehlerfrei und kann von einem anderen Agenten ausgeführt werden.
+2.1. der gesamte Plan (nicht nur ein Teil) ist eine Markdown-Datei
+3. Der andere Agent hat den Schreibezugriff nur auf diesen (/home/mrphaot/Dokumente/lua/minecraft) Ordner.
+4. Der Plan enthält ausgearbeitete und getestete Previews von den möglichen Implementierungen.
