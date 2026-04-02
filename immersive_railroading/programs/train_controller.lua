@@ -34,6 +34,8 @@ local DEFAULTS = {
   min_brake_command = 0.08,
   min_axis_speed_mps = 0.35,
   reverser_switch_speed_mps = 0.4,
+  log_default_path = "train_controller.log",
+  terminal_stop_margin_m = 0.75,
 }
 
 local INFO_PATHS = {
@@ -158,8 +160,13 @@ end
 local function emit_line(logger, line)
   io.write(line .. "\n")
   if logger and logger.handle then
-    logger.handle:write(line .. "\n")
-    logger.handle:flush()
+    local ok, write_error = pcall(function()
+      logger.handle:write(line .. "\n")
+      logger.handle:flush()
+    end)
+    if not ok then
+      io.stderr:write("log write failed: " .. tostring(write_error) .. "\n")
+    end
   end
 end
 
@@ -580,11 +587,18 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local longitudinal_m = vector_dot(to_target, axis)
     local lateral_m = vector_length(vector_reject(to_target, axis))
     local remaining_m = math.abs(longitudinal_m)
+    local terminal_stop_zone_m = math.max(stop_buffer_m, DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m)
     local desired_reverser = longitudinal_m >= 0 and 1 or -1
+    if remaining_m <= terminal_stop_zone_m then
+      desired_reverser = state.active_reverser
+    end
     local speed_toward_target_mps = vector_dot(filtered_velocity, axis) * desired_reverser
 
     local pid = derive_pid(characteristics, brake_model)
     local target_speed_mps = stop_speed_cap(remaining_m, stop_buffer_m, brake_model, characteristics.cruise_mps)
+    if remaining_m <= terminal_stop_zone_m then
+      target_speed_mps = 0
+    end
     local speed_error = target_speed_mps - speed_toward_target_mps
 
     local hold = remaining_m <= DEFAULTS.arrival_distance_m and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
@@ -732,9 +746,12 @@ local function parse_cli(argv)
         log_path = next_value
         index = index + 2
       else
-        log_path = "logs/train_controller.log"
+        log_path = DEFAULTS.log_default_path
         index = index + 1
       end
+    elseif value:match("^%-%-log=") then
+      log_path = value:match("^%-%-log=(.+)$")
+      index = index + 1
     else
       positional[#positional + 1] = value
       index = index + 1
@@ -755,10 +772,24 @@ local function parse_number(label, value)
   return number
 end
 
+local function parse_goto_parameters(argv)
+  local cruise_kmh = argv[5] and parse_number("cruise_kmh", argv[5]) or DEFAULTS.cruise_kmh
+  local stop_buffer_m = argv[6] and parse_number("stop_buffer_m", argv[6]) or DEFAULTS.stop_buffer_m
+
+  if argv[5] and argv[6] and cruise_kmh <= 10 and stop_buffer_m >= 15 then
+    error(("arguments look swapped: expected cruise_kmh then stop_buffer_m, got cruise_kmh=%s stop_buffer_m=%s"):format(
+      tostring(cruise_kmh),
+      tostring(stop_buffer_m)
+    ))
+  end
+
+  return cruise_kmh, stop_buffer_m
+end
+
 local function usage()
   io.write("usage:\n")
-  io.write("  lua programs/train_controller.lua inspect [--log [path]]\n")
-  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log [path]]\n")
+  io.write("  lua programs/train_controller.lua inspect [--log[=path]]\n")
+  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log[=path]]\n")
 end
 
 local function main(argv)
@@ -796,8 +827,7 @@ local function main(argv)
       y = parse_number("y", argv[3]),
       z = parse_number("z", argv[4]),
     }
-    local cruise_kmh = argv[5] and parse_number("cruise_kmh", argv[5]) or DEFAULTS.cruise_kmh
-    local stop_buffer_m = argv[6] and parse_number("stop_buffer_m", argv[6]) or DEFAULTS.stop_buffer_m
+    local cruise_kmh, stop_buffer_m = parse_goto_parameters(argv)
     if logger then
       emit_line(logger, ("logging to %s"):format(logger.path))
       emit_line(logger, ("goto x=%s y=%s z=%s cruise_kmh=%s stop_buffer_m=%s"):format(
