@@ -144,25 +144,32 @@ local function make_logger(path)
   if not handle then
     return nil, open_error
   end
+  handle:write("")
+  handle:flush()
+  handle:close()
 
   return {
     path = path,
-    handle = handle,
   }
 end
 
 local function close_logger(logger)
-  if logger and logger.handle then
-    logger.handle:close()
+  if not logger then
+    return
   end
 end
 
 local function emit_line(logger, line)
   io.write(line .. "\n")
-  if logger and logger.handle then
+  if logger and logger.path then
     local ok, write_error = pcall(function()
-      logger.handle:write(line .. "\n")
-      logger.handle:flush()
+      local handle, open_error = io.open(logger.path, "a")
+      if not handle then
+        error(open_error)
+      end
+      handle:write(line .. "\n")
+      handle:flush()
+      handle:close()
     end)
     if not ok then
       io.stderr:write("log write failed: " .. tostring(write_error) .. "\n")
@@ -330,7 +337,9 @@ local function read_position(remote)
     return vector_from_pos(x)
   end
 
-  return vector_from_pos({x = x, y = y, z = z})
+  -- Field testing indicates the remote-control tuple is exposed in a swapped
+  -- horizontal order in this environment, so we normalize it back to world XYZ.
+  return vector_from_pos({x = z, y = y, z = x})
 end
 
 local function extract_characteristics(info, consist, requested_cruise_kmh)
