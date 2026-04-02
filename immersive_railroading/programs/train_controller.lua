@@ -587,10 +587,19 @@ local function main(argv)
   return nil, "unknown command: " .. tostring(argv[1])
 end
 
-local argv = rawget(_G, "arg") or {}
-local running_as_script = type(argv[0]) == "string" and argv[0]:match("train_controller%.lua$")
+local function can_auto_run()
+  if component then
+    return true
+  end
+  return pcall(require, "component")
+end
 
-if running_as_script then
+local exports = {
+  main = main,
+}
+
+if ... ~= "__module__" and can_auto_run() then
+  local argv = {...}
   local ok, result_or_error = pcall(function()
     local success, err = main(argv)
     if success == nil then
@@ -605,3 +614,5 @@ if running_as_script then
     os.exit(1)
   end
 end
+
+return exports
