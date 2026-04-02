@@ -23,6 +23,15 @@ local DEFAULTS = {
   brake_deadband = 0.03,
   hold_brake = 0.35,
   hold_independent_brake = 1.0,
+  speed_filter_memory_s = 0.8,
+  enter_brake_margin_mps = 0.35,
+  exit_brake_margin_mps = 0.9,
+  approach_distance_m = 120,
+  approach_throttle_limit = 0.4,
+  cruise_throttle_limit = 0.75,
+  brake_release_hold_s = 0.8,
+  overspeed_full_brake_margin_mps = 2.0,
+  min_brake_command = 0.08,
 }
 
 local INFO_PATHS = {
@@ -304,6 +313,33 @@ local function stop_speed_cap(remaining_m, stop_buffer_m, brake_model, cruise_mp
   return math.min(cruise_mps, stop_cap)
 end
 
+local function select_motion_mode(state, speed_mps, target_speed_mps, remaining_m)
+  local overspeed = speed_mps - target_speed_mps
+  local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
+
+  if must_hold_brake then
+    return "brake"
+  end
+
+  if remaining_m <= DEFAULTS.arrival_distance_m * 4 then
+    return "brake"
+  end
+
+  if overspeed >= DEFAULTS.enter_brake_margin_mps then
+    return "brake"
+  end
+
+  if state.mode == "brake" and overspeed >= -DEFAULTS.exit_brake_margin_mps then
+    return "brake"
+  end
+
+  if target_speed_mps <= DEFAULTS.arrival_speed_mps * 2 then
+    return "coast"
+  end
+
+  return "drive"
+end
+
 local function print_table(title, value, indent, visited)
   indent = indent or ""
   visited = visited or {}
@@ -406,6 +442,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
   local previous_time = nil
   local previous_position = nil
   local previous_speed_mps = 0
+  local filtered_speed_mps = 0
   local integral = 0
   local previous_error = 0
   local settled_since = nil
@@ -415,6 +452,10 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
     reverser = 1,
     brake = 0,
     independent_brake = 0,
+  }
+  local state = {
+    mode = "drive",
+    brake_release_until = nil,
   }
 
   ensure_ignition(remote)
@@ -437,25 +478,23 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
       dt_s = math.max(now - previous_time, 0.001)
     end
 
-    local speed_mps = 0
+    local raw_speed_mps = 0
     if previous_position then
-      speed_mps = distance(previous_position, position) / dt_s
+      raw_speed_mps = distance(previous_position, position) / dt_s
     end
+    filtered_speed_mps = ema(filtered_speed_mps, raw_speed_mps, DEFAULTS.speed_filter_memory_s, dt_s)
 
     local remaining_m = distance(position, target)
     local pid = derive_pid(characteristics, brake_model)
     local target_speed_mps = stop_speed_cap(remaining_m, stop_buffer_m, brake_model, characteristics.cruise_mps)
-    local speed_error = target_speed_mps - speed_mps
+    local speed_error = target_speed_mps - filtered_speed_mps
 
-    integral = clamp(integral + speed_error * dt_s, -target_speed_mps * 3, target_speed_mps * 3)
-    local derivative = (speed_error - previous_error) / dt_s
-    local effort = pid.kp * speed_error + pid.ki * integral + pid.kd * derivative
-
-    local hold = remaining_m <= DEFAULTS.arrival_distance_m and speed_mps <= DEFAULTS.arrival_speed_mps
+    local hold = remaining_m <= DEFAULTS.arrival_distance_m and filtered_speed_mps <= DEFAULTS.arrival_speed_mps
     local control
 
     if hold then
       settled_since = settled_since or now
+      state.mode = "hold"
       control = {
         throttle = 0,
         reverser = 0,
@@ -472,19 +511,43 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
       end
     else
       settled_since = nil
+      state.mode = select_motion_mode(state, filtered_speed_mps, target_speed_mps, remaining_m)
       local throttle = 0
       local brake = 0
 
-      if effort >= 0 then
-        throttle = clamp(effort, 0, 1)
+      if state.mode == "drive" then
+        integral = clamp(integral + speed_error * dt_s, -target_speed_mps * 2, target_speed_mps * 2)
+        local derivative = (speed_error - previous_error) / dt_s
+        local effort = pid.kp * speed_error + pid.ki * integral + pid.kd * derivative
+        local throttle_limit = remaining_m <= DEFAULTS.approach_distance_m
+          and DEFAULTS.approach_throttle_limit
+          or DEFAULTS.cruise_throttle_limit
+        throttle = clamp(effort, 0, throttle_limit)
         if throttle < DEFAULTS.throttle_deadband then
           throttle = 0
         end
-      else
-        brake = clamp(-effort, 0, 1)
+      elseif state.mode == "brake" then
+        -- Resetting the drive integrator while braking avoids the controller
+        -- immediately snapping back to throttle after one slow sample.
+        integral = 0
+        local overspeed = filtered_speed_mps - target_speed_mps
+        brake = clamp(overspeed / math.max(DEFAULTS.enter_brake_margin_mps, 0.05), 0, 1)
+        if overspeed >= DEFAULTS.overspeed_full_brake_margin_mps then
+          brake = 1
+        end
+        if brake > 0 and brake < DEFAULTS.min_brake_command then
+          brake = DEFAULTS.min_brake_command
+        end
         if brake < DEFAULTS.brake_deadband then
           brake = 0
+          state.brake_release_until = now + DEFAULTS.brake_release_hold_s
+        else
+          state.brake_release_until = nil
         end
+      else
+        integral = 0
+        throttle = 0
+        brake = 0
       end
 
       control = {
@@ -498,10 +561,10 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
     -- Brake learning is tied to measured deceleration so the stopping model can improve
     -- without assuming a hidden API field that might not exist in this IR build.
     if previous_time and previous_speed_mps > 0 then
-      local observed_decel = math.max((previous_speed_mps - speed_mps) / dt_s, 0)
+      local observed_decel = math.max((previous_speed_mps - filtered_speed_mps) / dt_s, 0)
       if last_control.brake >= DEFAULTS.brake_learning_min_cmd
         and last_control.throttle <= DEFAULTS.throttle_deadband
-        and speed_mps >= DEFAULTS.brake_learning_min_speed_mps then
+        and filtered_speed_mps >= DEFAULTS.brake_learning_min_speed_mps then
         local effective_command = math.max(
           last_control.brake ^ DEFAULTS.brake_learning_curve_exponent,
           DEFAULTS.brake_learning_floor
@@ -525,7 +588,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
         "remaining=%.2fm speed=%.2fm/s cap=%.2fm/s throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         remaining_m,
-        speed_mps,
+        filtered_speed_mps,
         target_speed_mps,
         control.throttle,
         control.brake,
@@ -535,7 +598,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
 
     previous_time = now
     previous_position = position
-    previous_speed_mps = speed_mps
+    previous_speed_mps = filtered_speed_mps
     previous_error = speed_error
     last_control = control
 
@@ -551,10 +614,32 @@ local function parse_number(label, value)
   return number
 end
 
+local function parse_goto_args(argv)
+  local fourth = argv[5] and parse_number("arg4", argv[5]) or nil
+  local fifth = argv[6] and parse_number("arg5", argv[6]) or nil
+
+  if fourth == nil and fifth == nil then
+    return DEFAULTS.cruise_kmh, DEFAULTS.stop_buffer_m
+  end
+
+  if fourth ~= nil and fifth == nil then
+    return fourth, DEFAULTS.stop_buffer_m
+  end
+
+  -- Accept both orders because early field testing exposed confusion between
+  -- cruise speed and stop buffer, and the values are easy to distinguish.
+  if fourth <= 10 and fifth > 10 then
+    return fifth, fourth
+  end
+
+  return fourth, fifth
+end
+
 local function usage()
   io.write("usage:\n")
   io.write("  lua programs/train_controller.lua inspect\n")
   io.write("  lua programs/train_controller.lua goto <x> <y> <z> [cruise_kmh] [stop_buffer_m]\n")
+  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [stop_buffer_m] [cruise_kmh]\n")
 end
 
 local function main(argv)
@@ -579,8 +664,7 @@ local function main(argv)
       y = parse_number("y", argv[3]),
       z = parse_number("z", argv[4]),
     }
-    local cruise_kmh = argv[5] and parse_number("cruise_kmh", argv[5]) or DEFAULTS.cruise_kmh
-    local stop_buffer_m = argv[6] and parse_number("stop_buffer_m", argv[6]) or DEFAULTS.stop_buffer_m
+    local cruise_kmh, stop_buffer_m = parse_goto_args(argv)
     return control_loop(remote, target, cruise_kmh, stop_buffer_m)
   end
 
