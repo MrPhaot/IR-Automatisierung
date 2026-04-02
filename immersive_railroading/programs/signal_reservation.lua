@@ -1,0 +1,2 @@
+-- TODO: Own block reservations, route claims, and signal state changes.
+-- Why this stays a skeleton in V1: block safety logic should not be hidden inside the train controller.

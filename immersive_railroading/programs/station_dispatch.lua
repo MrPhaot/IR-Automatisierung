@@ -1,0 +1,2 @@
+-- TODO: Own station names, dwell timing, and handoff into train_controller.lua.
+-- Why this stays a skeleton in V1: station policy should remain separate from local motion control.

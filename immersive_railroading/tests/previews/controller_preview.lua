@@ -1,0 +1,61 @@
+local function clamp(value, low, high)
+  if value < low then
+    return low
+  end
+  if value > high then
+    return high
+  end
+  return value
+end
+
+local function ema(previous, sample, memory_s, dt_s)
+  if previous == nil then
+    return sample
+  end
+  local alpha = clamp(dt_s / math.max(memory_s, dt_s), 0, 1)
+  return previous + (sample - previous) * alpha
+end
+
+local function derive_pid(mass_kg, power_w, traction_n, cruise_kmh, brake_mps2)
+  local v_ref_mps = math.max(cruise_kmh / 3.6, 4.0)
+  local a_drive = math.min(traction_n / mass_kg, power_w / math.max(v_ref_mps, 1) / mass_kg)
+  local t_drive = v_ref_mps / a_drive
+  local t_brake = v_ref_mps / brake_mps2
+
+  return {
+    kp = 1 / v_ref_mps,
+    ki = (1 / v_ref_mps) / t_brake,
+    kd = (1 / v_ref_mps) * math.min(t_drive, t_brake),
+  }
+end
+
+local function learn_brake(initial_brake_mps2, prev_speed_mps, curr_speed_mps, dt_s, brake_cmd)
+  local observed = math.max((prev_speed_mps - curr_speed_mps) / dt_s, 0)
+  local full_service = observed / math.max(brake_cmd ^ 1.2, 0.05)
+  return ema(initial_brake_mps2, full_service, 12.0, dt_s)
+end
+
+local function stop_speed_cap(remaining_m, stop_buffer_m, brake_mps2, cruise_kmh)
+  local cruise_mps = cruise_kmh / 3.6
+  return math.min(
+    cruise_mps,
+    math.sqrt(2 * brake_mps2 * math.max(remaining_m - stop_buffer_m, 0))
+  )
+end
+
+local pid = derive_pid(90000, 3000000, 200000, 38.25, 1.23)
+assert(math.abs(pid.kp - 0.0942) < 0.002, "unexpected kp")
+assert(math.abs(pid.ki - 0.0109) < 0.002, "unexpected ki")
+assert(math.abs(pid.kd - 0.4522) < 0.02, "unexpected kd")
+
+local learned = learn_brake(nil, 12.0, 11.59914, 0.5, 0.7)
+assert(math.abs(learned - 1.2300) < 0.01, "unexpected learned brake")
+
+local stop_cap_short = stop_speed_cap(25, 3, 1.23, 200)
+local stop_cap_long = stop_speed_cap(400, 3, 1.23, 76.464)
+assert(math.abs(stop_cap_short - 7.36) < 0.05, "unexpected short stop cap")
+assert(math.abs(stop_cap_long - 21.24) < 0.05, "unexpected long stop cap")
+
+print(("pid ok: kp=%.4f ki=%.4f kd=%.4f"):format(pid.kp, pid.ki, pid.kd))
+print(("brake learning ok: %.3f m/s^2"):format(learned))
+print(("stop profile ok: %.2f m/s at 25m, %.2f m/s at 400m"):format(stop_cap_short, stop_cap_long))

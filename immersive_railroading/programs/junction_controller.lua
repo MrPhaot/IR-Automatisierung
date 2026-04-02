@@ -1,0 +1,2 @@
+-- TODO: Own switch alignment, conflict checks, locking, and release rules.
+-- Why this stays a skeleton in V1: turnout safety needs route-level context the controller does not have yet.

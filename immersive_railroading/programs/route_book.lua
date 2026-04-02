@@ -1,0 +1,2 @@
+-- TODO: Define named routes, stations, and waypoint chains for later dispatch layers.
+-- Why this stays a skeleton in V1: the controller currently consumes only explicit XYZ targets.
