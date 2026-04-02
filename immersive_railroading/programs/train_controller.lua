@@ -32,6 +32,8 @@ local DEFAULTS = {
   brake_release_hold_s = 0.8,
   overspeed_full_brake_margin_mps = 2.0,
   min_brake_command = 0.08,
+  min_axis_speed_mps = 0.35,
+  reverser_switch_speed_mps = 0.4,
 }
 
 local INFO_PATHS = {
@@ -108,6 +110,57 @@ end
 local function round(value, digits)
   local factor = 10 ^ (digits or 0)
   return math.floor(value * factor + 0.5) / factor
+end
+
+local function split_path(path)
+  local directory, name = path:match("^(.*)/([^/]+)$")
+  if directory then
+    return directory, name
+  end
+  return ".", path
+end
+
+local function ensure_parent_directory(path)
+  local fs = safe_require("filesystem")
+  if not fs then
+    return
+  end
+
+  local directory = split_path(path)
+  if directory ~= "." and not fs.exists(directory) then
+    fs.makeDirectory(directory)
+  end
+end
+
+local function make_logger(path)
+  if not path then
+    return nil
+  end
+
+  ensure_parent_directory(path)
+  local handle, open_error = io.open(path, "a")
+  if not handle then
+    return nil, open_error
+  end
+
+  return {
+    path = path,
+    handle = handle,
+  }
+end
+
+local function close_logger(logger)
+  if logger and logger.handle then
+    logger.handle:close()
+  end
+end
+
+local function emit_line(logger, line)
+  io.write(line .. "\n")
+  if logger and logger.handle then
+    logger.handle:write(line .. "\n")
+    logger.handle:flush()
+  end
 end
 
 local function uptime()
@@ -200,11 +253,40 @@ local function vector_from_pos(position)
   return {x = x, y = y, z = z}
 end
 
-local function distance(a, b)
-  local dx = b.x - a.x
-  local dy = b.y - a.y
-  local dz = b.z - a.z
-  return math.sqrt(dx * dx + dy * dy + dz * dz)
+local function vector_sub(a, b)
+  return {
+    x = a.x - b.x,
+    y = a.y - b.y,
+    z = a.z - b.z,
+  }
+end
+
+local function vector_scale(vector, scalar)
+  return {
+    x = vector.x * scalar,
+    y = vector.y * scalar,
+    z = vector.z * scalar,
+  }
+end
+
+local function vector_dot(a, b)
+  return a.x * b.x + a.y * b.y + a.z * b.z
+end
+
+local function vector_length(vector)
+  return math.sqrt(vector_dot(vector, vector))
+end
+
+local function normalize(vector)
+  local length = vector_length(vector)
+  if length <= 0 then
+    return nil
+  end
+  return vector_scale(vector, 1 / length)
+end
+
+local function vector_reject(vector, axis)
+  return vector_sub(vector, vector_scale(axis, vector_dot(vector, axis)))
 end
 
 local function ema(previous, sample, memory_s, dt_s)
@@ -313,8 +395,8 @@ local function stop_speed_cap(remaining_m, stop_buffer_m, brake_model, cruise_mp
   return math.min(cruise_mps, stop_cap)
 end
 
-local function select_motion_mode(state, speed_mps, target_speed_mps, remaining_m)
-  local overspeed = speed_mps - target_speed_mps
+local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, remaining_m)
+  local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
 
   if must_hold_brake then
@@ -340,21 +422,21 @@ local function select_motion_mode(state, speed_mps, target_speed_mps, remaining_
   return "drive"
 end
 
-local function print_table(title, value, indent, visited)
+local function print_table(title, value, indent, visited, logger)
   indent = indent or ""
   visited = visited or {}
 
   if title then
-    io.write(title .. "\n")
+    emit_line(logger, title)
   end
 
   if type(value) ~= "table" then
-    io.write(indent .. tostring(value) .. "\n")
+    emit_line(logger, indent .. tostring(value))
     return
   end
 
   if visited[value] then
-    io.write(indent .. "<cycle>\n")
+    emit_line(logger, indent .. "<cycle>")
     return
   end
   visited[value] = true
@@ -370,10 +452,10 @@ local function print_table(title, value, indent, visited)
   for _, key in ipairs(keys) do
     local item = value[key]
     if type(item) == "table" then
-      io.write(("%s%s:\n"):format(indent, tostring(key)))
-      print_table(nil, item, indent .. "  ", visited)
+      emit_line(logger, ("%s%s:"):format(indent, tostring(key)))
+      print_table(nil, item, indent .. "  ", visited, logger)
     else
-      io.write(("%s%s = %s\n"):format(indent, tostring(key), tostring(item)))
+      emit_line(logger, ("%s%s = %s"):format(indent, tostring(key), tostring(item)))
     end
   end
 end
@@ -396,7 +478,7 @@ local function ensure_ignition(remote)
   end
 end
 
-local function inspect(remote, requested_cruise_kmh)
+local function inspect(remote, requested_cruise_kmh, logger)
   local info, info_error = read_info(remote)
   local consist = read_consist(remote)
   local position, position_error = read_position(remote)
@@ -405,31 +487,31 @@ local function inspect(remote, requested_cruise_kmh)
   local pid = derive_pid(characteristics, brake_model)
 
   if not info then
-    io.write("info() unavailable: " .. tostring(info_error) .. "\n")
+    emit_line(logger, "info() unavailable: " .. tostring(info_error))
   end
   if not position then
-    io.write("getPos() unavailable: " .. tostring(position_error) .. "\n")
+    emit_line(logger, "getPos() unavailable: " .. tostring(position_error))
   end
 
-  print_table("position", position or {})
-  print_table("derived_characteristics", characteristics)
+  print_table("position", position or {}, nil, nil, logger)
+  print_table("derived_characteristics", characteristics, nil, nil, logger)
   print_table("baseline_pid", {
     kp = round(pid.kp, 4),
     ki = round(pid.ki, 4),
     kd = round(pid.kd, 4),
     a_drive_mps2 = round(pid.a_drive_mps2, 3),
     a_brake_mps2 = round(pid.a_brake_mps2, 3),
-  })
+  }, nil, nil, logger)
 
   if info then
-    print_table("raw_info", info)
+    print_table("raw_info", info, nil, nil, logger)
   end
   if consist then
-    print_table("raw_consist", consist)
+    print_table("raw_consist", consist, nil, nil, logger)
   end
 end
 
-local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
+local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m, logger)
   local info, info_error = read_info(remote)
   if not info then
     return nil, "failed to read train info: " .. tostring(info_error)
@@ -441,8 +523,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
 
   local previous_time = nil
   local previous_position = nil
-  local previous_speed_mps = 0
-  local filtered_speed_mps = 0
+  local previous_speed_toward_target_mps = 0
+  local filtered_velocity = {x = 0, y = 0, z = 0}
   local integral = 0
   local previous_error = 0
   local settled_since = nil
@@ -456,6 +538,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
   local state = {
     mode = "drive",
     brake_release_until = nil,
+    motion_axis = nil,
+    active_reverser = 1,
   }
 
   ensure_ignition(remote)
@@ -478,23 +562,38 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
       dt_s = math.max(now - previous_time, 0.001)
     end
 
-    local raw_speed_mps = 0
+    local velocity_vector = {x = 0, y = 0, z = 0}
     if previous_position then
-      raw_speed_mps = distance(previous_position, position) / dt_s
+      velocity_vector = vector_scale(vector_sub(position, previous_position), 1 / dt_s)
     end
-    filtered_speed_mps = ema(filtered_speed_mps, raw_speed_mps, DEFAULTS.speed_filter_memory_s, dt_s)
+    filtered_velocity.x = ema(filtered_velocity.x, velocity_vector.x, DEFAULTS.speed_filter_memory_s, dt_s)
+    filtered_velocity.y = ema(filtered_velocity.y, velocity_vector.y, DEFAULTS.speed_filter_memory_s, dt_s)
+    filtered_velocity.z = ema(filtered_velocity.z, velocity_vector.z, DEFAULTS.speed_filter_memory_s, dt_s)
+    local filtered_speed_mps = vector_length(filtered_velocity)
 
-    local remaining_m = distance(position, target)
+    if filtered_speed_mps >= DEFAULTS.min_axis_speed_mps then
+      state.motion_axis = normalize(filtered_velocity) or state.motion_axis
+    end
+
+    local to_target = vector_sub(target, position)
+    local axis = state.motion_axis or normalize(to_target) or {x = 1, y = 0, z = 0}
+    local longitudinal_m = vector_dot(to_target, axis)
+    local lateral_m = vector_length(vector_reject(to_target, axis))
+    local remaining_m = math.abs(longitudinal_m)
+    local desired_reverser = longitudinal_m >= 0 and 1 or -1
+    local speed_toward_target_mps = vector_dot(filtered_velocity, axis) * desired_reverser
+
     local pid = derive_pid(characteristics, brake_model)
     local target_speed_mps = stop_speed_cap(remaining_m, stop_buffer_m, brake_model, characteristics.cruise_mps)
-    local speed_error = target_speed_mps - filtered_speed_mps
+    local speed_error = target_speed_mps - speed_toward_target_mps
 
-    local hold = remaining_m <= DEFAULTS.arrival_distance_m and filtered_speed_mps <= DEFAULTS.arrival_speed_mps
+    local hold = remaining_m <= DEFAULTS.arrival_distance_m and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
     local control
 
     if hold then
       settled_since = settled_since or now
       state.mode = "hold"
+      state.active_reverser = desired_reverser
       control = {
         throttle = 0,
         reverser = 0,
@@ -503,7 +602,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
       }
       if now - settled_since >= DEFAULTS.settle_time_s then
         apply_controls(remote, control)
-        io.write(("arrived at target with learned brake %.3f m/s^2 after %d samples\n"):format(
+        emit_line(logger, ("arrived at target with learned brake %.3f m/s^2 after %d samples"):format(
           brake_model.full_service_mps2,
           brake_model.samples
         ))
@@ -511,7 +610,16 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
       end
     else
       settled_since = nil
-      state.mode = select_motion_mode(state, filtered_speed_mps, target_speed_mps, remaining_m)
+      local switching_reverser = desired_reverser ~= state.active_reverser
+        and filtered_speed_mps > DEFAULTS.reverser_switch_speed_mps
+
+      if not switching_reverser then
+        state.active_reverser = desired_reverser
+      end
+
+      state.mode = switching_reverser
+        and "brake"
+        or select_motion_mode(state, speed_toward_target_mps, target_speed_mps, remaining_m)
       local throttle = 0
       local brake = 0
 
@@ -530,8 +638,11 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
         -- Resetting the drive integrator while braking avoids the controller
         -- immediately snapping back to throttle after one slow sample.
         integral = 0
-        local overspeed = filtered_speed_mps - target_speed_mps
+        local overspeed = speed_toward_target_mps - target_speed_mps
         brake = clamp(overspeed / math.max(DEFAULTS.enter_brake_margin_mps, 0.05), 0, 1)
+        if switching_reverser then
+          brake = math.max(brake, 0.4)
+        end
         if overspeed >= DEFAULTS.overspeed_full_brake_margin_mps then
           brake = 1
         end
@@ -552,7 +663,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
 
       control = {
         throttle = throttle,
-        reverser = 1,
+        reverser = state.active_reverser,
         brake = brake,
         independent_brake = 0,
       }
@@ -560,11 +671,11 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
 
     -- Brake learning is tied to measured deceleration so the stopping model can improve
     -- without assuming a hidden API field that might not exist in this IR build.
-    if previous_time and previous_speed_mps > 0 then
-      local observed_decel = math.max((previous_speed_mps - filtered_speed_mps) / dt_s, 0)
+    if previous_time and previous_speed_toward_target_mps > 0 then
+      local observed_decel = math.max((previous_speed_toward_target_mps - speed_toward_target_mps) / dt_s, 0)
       if last_control.brake >= DEFAULTS.brake_learning_min_cmd
         and last_control.throttle <= DEFAULTS.throttle_deadband
-        and filtered_speed_mps >= DEFAULTS.brake_learning_min_speed_mps then
+        and math.abs(speed_toward_target_mps) >= DEFAULTS.brake_learning_min_speed_mps then
         local effective_command = math.max(
           last_control.brake ^ DEFAULTS.brake_learning_curve_exponent,
           DEFAULTS.brake_learning_floor
@@ -584,26 +695,56 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m)
 
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
-      io.write((
-        "remaining=%.2fm speed=%.2fm/s cap=%.2fm/s throttle=%.2f brake=%.2f brake_model=%.3f\n"
+      emit_line(logger, (
+        "longitudinal=%.2fm lateral=%.2fm speed=%.2fm/s cap=%.2fm/s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         remaining_m,
-        filtered_speed_mps,
+        lateral_m,
+        speed_toward_target_mps,
         target_speed_mps,
+        state.active_reverser,
         control.throttle,
         control.brake,
         brake_model.full_service_mps2
-      ))
+      ):gsub("\n$", ""))
     end
 
     previous_time = now
     previous_position = position
-    previous_speed_mps = filtered_speed_mps
+    previous_speed_toward_target_mps = speed_toward_target_mps
     previous_error = speed_error
     last_control = control
 
     sleep_for(DEFAULTS.loop_dt_s)
   end
+end
+
+local function parse_cli(argv)
+  local positional = {}
+  local log_path = nil
+  local index = 1
+
+  while index <= #argv do
+    local value = argv[index]
+    if value == "--log" then
+      local next_value = argv[index + 1]
+      if next_value and next_value ~= "" and next_value:sub(1, 2) ~= "--" then
+        log_path = next_value
+        index = index + 2
+      else
+        log_path = "logs/train_controller.log"
+        index = index + 1
+      end
+    else
+      positional[#positional + 1] = value
+      index = index + 1
+    end
+  end
+
+  return {
+    argv = positional,
+    log_path = log_path,
+  }
 end
 
 local function parse_number(label, value)
@@ -614,47 +755,38 @@ local function parse_number(label, value)
   return number
 end
 
-local function parse_goto_args(argv)
-  local fourth = argv[5] and parse_number("arg4", argv[5]) or nil
-  local fifth = argv[6] and parse_number("arg5", argv[6]) or nil
-
-  if fourth == nil and fifth == nil then
-    return DEFAULTS.cruise_kmh, DEFAULTS.stop_buffer_m
-  end
-
-  if fourth ~= nil and fifth == nil then
-    return fourth, DEFAULTS.stop_buffer_m
-  end
-
-  -- Accept both orders because early field testing exposed confusion between
-  -- cruise speed and stop buffer, and the values are easy to distinguish.
-  if fourth <= 10 and fifth > 10 then
-    return fifth, fourth
-  end
-
-  return fourth, fifth
-end
-
 local function usage()
   io.write("usage:\n")
-  io.write("  lua programs/train_controller.lua inspect\n")
-  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [cruise_kmh] [stop_buffer_m]\n")
-  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [stop_buffer_m] [cruise_kmh]\n")
+  io.write("  lua programs/train_controller.lua inspect [--log [path]]\n")
+  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log [path]]\n")
 end
 
 local function main(argv)
+  local cli = parse_cli(argv)
+  argv = cli.argv
+
   if not argv[1] or argv[1] == "help" or argv[1] == "--help" then
     usage()
     return true
   end
 
+  local logger, logger_error = make_logger(cli.log_path)
+  if cli.log_path and not logger then
+    return nil, "failed to open log file: " .. tostring(logger_error)
+  end
+
   local remote, remote_error = get_remote()
   if not remote then
+    close_logger(logger)
     return nil, remote_error
   end
 
   if argv[1] == "inspect" then
-    inspect(remote)
+    if logger then
+      emit_line(logger, "logging to " .. logger.path)
+    end
+    inspect(remote, nil, logger)
+    close_logger(logger)
     return true
   end
 
@@ -664,10 +796,24 @@ local function main(argv)
       y = parse_number("y", argv[3]),
       z = parse_number("z", argv[4]),
     }
-    local cruise_kmh, stop_buffer_m = parse_goto_args(argv)
-    return control_loop(remote, target, cruise_kmh, stop_buffer_m)
+    local cruise_kmh = argv[5] and parse_number("cruise_kmh", argv[5]) or DEFAULTS.cruise_kmh
+    local stop_buffer_m = argv[6] and parse_number("stop_buffer_m", argv[6]) or DEFAULTS.stop_buffer_m
+    if logger then
+      emit_line(logger, ("logging to %s"):format(logger.path))
+      emit_line(logger, ("goto x=%s y=%s z=%s cruise_kmh=%s stop_buffer_m=%s"):format(
+        target.x,
+        target.y,
+        target.z,
+        cruise_kmh,
+        stop_buffer_m
+      ))
+    end
+    local ok, err = control_loop(remote, target, cruise_kmh, stop_buffer_m, logger)
+    close_logger(logger)
+    return ok, err
   end
 
+  close_logger(logger)
   return nil, "unknown command: " .. tostring(argv[1])
 end
 
