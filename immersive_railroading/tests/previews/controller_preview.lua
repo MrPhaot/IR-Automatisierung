@@ -213,6 +213,9 @@ local function extract_characteristics(info, consist, requested_cruise_kmh)
   local traction_n = pick_number(consist, INFO_PATHS.traction_n)
     or pick_number(info, INFO_PATHS.traction_n)
     or DEFAULTS.fallback_traction_n
+  if traction_n and traction_n < 5000 then
+    traction_n = traction_n * 1000
+  end
 
   local power_w = pick_number(consist, INFO_PATHS.power_w)
     or pick_number(info, INFO_PATHS.power_w)
@@ -710,6 +713,15 @@ local consist_first_power = extract_characteristics(
   40
 )
 assert(math.abs(consist_first_power.power_w - 2200000) < 0.001, "consist power should win over locomotive info power")
+
+local normalized_traction = extract_characteristics(
+  {
+    traction = 250,
+  },
+  nil,
+  40
+)
+assert(math.abs(normalized_traction.traction_n - 250000) < 0.001, "small traction inputs should be normalized from kN-style values")
 
 print(("pid ok: kp=%.4f ki=%.4f kd=%.4f"):format(pid.kp, pid.ki, pid.kd))
 print(("brake learning ok: %.3f m/s^2"):format(learned))

@@ -46,6 +46,7 @@
 - Do not invent APIs or in-game behavior. Inspect local files, jars, docs, or tests first.
 - Keep docs compact and progressive rather than repetitive.
 - Update this AGENTS.md only with direct permission; other documentation files (except for files under docs/plans) can be updated automatically if needed.
+- Treat files under `docs/plans/` as historical or task-specific artifacts: read them when they are relevant to the current task, especially when implementing, updating, reviewing, or validating that specific plan, handoff, or prompt, but do not assume every historical plan must be read for unrelated work.
 - Comments should explain mainly why a decision exists.
 - Preserve the separation between the real controller and future skeleton programs.
 - Run local Lua previews and `luac -p` after edits.

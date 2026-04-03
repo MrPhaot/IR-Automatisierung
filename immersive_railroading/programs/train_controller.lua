@@ -981,12 +981,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       if is_interrupt_reason(normalized_position_error) then
         return abort_run(remote, logger, normalized_position_error)
       end
-      local stop_ok, stop_error = pcall(apply_controls, remote, {
-        throttle = 0,
-        reverser = 0,
-        brake = 1,
-        independent_brake = 1,
-      })
+      local stop_ok, stop_error = pcall(apply_safe_stop, remote, 1)
       if not stop_ok then
         local normalized_stop_error = normalize_runtime_error(stop_error)
         if is_interrupt_reason(normalized_stop_error) then
@@ -1294,7 +1289,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         independent_brake = DEFAULTS.hold_independent_brake,
       }
       if now - settled_since >= DEFAULTS.settle_time_s then
-        local hold_ok, hold_error = pcall(apply_controls, remote, control)
+        local hold_ok, hold_error = pcall(apply_safe_stop, remote, control.brake)
         if not hold_ok then
           local normalized_hold_error = normalize_runtime_error(hold_error)
           if is_interrupt_reason(normalized_hold_error) then
@@ -1338,7 +1333,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           brake = DEFAULTS.hold_brake,
           independent_brake = DEFAULTS.hold_independent_brake,
         }
-        local hold_ok, hold_error = pcall(apply_controls, remote, control)
+        local hold_ok, hold_error = pcall(apply_safe_stop, remote, control.brake)
         if not hold_ok then
           local normalized_hold_error = normalize_runtime_error(hold_error)
           if is_interrupt_reason(normalized_hold_error) then

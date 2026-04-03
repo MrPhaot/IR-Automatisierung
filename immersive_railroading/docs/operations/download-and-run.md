@@ -54,6 +54,7 @@ Why this matters:
 - `stop_buffer_m` still defines the stop point separately from the profile choice; it does not replace `--profile`.
 
 ## Test-World Log Location
+
 The current OpenComputers test machine writes logs under a path shaped like:
 
 `<launcher_root>/instances/<instance_name>/minecraft/saves/<world_name>/opencomputers/<computer_uuid>/home/immersive_railroading/programs/`
@@ -69,6 +70,8 @@ Useful real example logs found under that pattern:
 - `reverse_test8.log`
 - `reverse_test10.log`
 - `reverse_test11.log`
+- `reverse_test12.log`
+- `reverse_test13.log`
 - `reverse_test14.log`
 - `reverse_test15.log`
 - `reverse_test16.log`
@@ -88,6 +91,7 @@ Current interpretation of those reference logs:
 - `reverse_test16.log` contains both `stop_buffer_m=1` profile runs, so it is the main side-by-side comparison for how `fast` and `conservative` diverge under a tighter stop point.
 
 ## Dev Note
+
 The current local developer machine uses this exact path:
 
 `~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/TEST (1)/opencomputers/6999b5c9-34da-42d3-9ab9-c02972b55cfc/home/immersive_railroading/programs/`
