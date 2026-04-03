@@ -6,6 +6,10 @@ return {
       url = "https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/main/immersive_railroading/programs/train_controller.lua",
     },
     {
+      path = "programs/trainctl.lua",
+      url = "https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/main/immersive_railroading/programs/trainctl.lua",
+    },
+    {
       path = "programs/station_dispatch.lua",
       url = "https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/main/immersive_railroading/programs/station_dispatch.lua",
     },

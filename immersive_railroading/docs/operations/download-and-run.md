@@ -26,6 +26,28 @@ Why this is the preferred entrypoint:
 - Replace `main` with a branch, tag, or commit ref when you want reproducible installs.
 - Re-run `lua programs/ir_install.lua` after updating `programs/install_manifest.lua`.
 
+## Train Controller Invocation
+Preferred OpenOS entrypoint:
+
+```sh
+cd /home/immersive_railroading/programs
+trainctl inspect --log
+trainctl goto -120 64 -35 40 3 --log=test.log
+```
+
+Fallback when you explicitly want to invoke the Lua frontend:
+
+```sh
+cd /home/immersive_railroading/programs
+lua train_controller.lua -- inspect --log
+lua train_controller.lua -- goto -120 64 -35 40 3 --log=test.log
+```
+
+Why this matters:
+- OpenOS `lua` parses command-line options before your script runs.
+- Without the separating `--`, negative coordinates like `-35` and flags like `--log` never reach `train_controller.lua`.
+- `trainctl` avoids that pre-processing and passes the arguments through unchanged.
+
 ## Safety Notes
 - The installer rejects:
   - absolute paths

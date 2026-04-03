@@ -820,21 +820,15 @@ end
 local function parse_goto_parameters(argv)
   local cruise_kmh = argv[5] and parse_number("cruise_kmh", argv[5]) or DEFAULTS.cruise_kmh
   local stop_buffer_m = argv[6] and parse_number("stop_buffer_m", argv[6]) or DEFAULTS.stop_buffer_m
-
-  if argv[5] and argv[6] and cruise_kmh <= 10 and stop_buffer_m >= 15 then
-    error(("arguments look swapped: expected cruise_kmh then stop_buffer_m, got cruise_kmh=%s stop_buffer_m=%s"):format(
-      tostring(cruise_kmh),
-      tostring(stop_buffer_m)
-    ))
-  end
-
   return cruise_kmh, stop_buffer_m
 end
 
 local function usage()
   io.write("usage:\n")
-  io.write("  lua programs/train_controller.lua inspect [--log[=path]]\n")
-  io.write("  lua programs/train_controller.lua goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log[=path]]\n")
+  io.write("  trainctl inspect [--log[=path]]\n")
+  io.write("  trainctl goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log[=path]]\n")
+  io.write("  lua train_controller.lua -- inspect [--log[=path]]\n")
+  io.write("  lua train_controller.lua -- goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log[=path]]\n")
 end
 
 local function main(argv)
