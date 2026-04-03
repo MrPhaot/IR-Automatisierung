@@ -662,6 +662,12 @@ end
 local function is_terminal_limit_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context)
   return stop_context
     and stop_context.in_no_reverse_approach
+    and not is_strict_arrival(
+      distance_to_target_m,
+      longitudinal_distance_m,
+      lateral_error_m,
+      speed_toward_target_mps
+    )
     and distance_to_target_m <= DEFAULTS.near_target_arrival_distance_m
     and longitudinal_distance_m <= DEFAULTS.near_target_arrival_longitudinal_m
     and lateral_error_m <= DEFAULTS.near_target_arrival_lateral_m
@@ -716,8 +722,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
+  local must_stop_now = stop_context and stop_context.must_stop_now
 
-  if state.final_forward_crawl then
+  if state.final_forward_crawl and not must_stop_now then
     return "drive"
   end
 
@@ -734,7 +741,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     return "brake"
   end
 
-  if stop_context and stop_context.must_stop_now then
+  if must_stop_now then
     return "brake"
   end
 
@@ -967,12 +974,22 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       if is_interrupt_reason(normalized_position_error) then
         return abort_run(remote, logger, normalized_position_error)
       end
-      pcall(apply_controls, remote, {
+      local stop_ok, stop_error = pcall(apply_controls, remote, {
         throttle = 0,
         reverser = 0,
         brake = 1,
         independent_brake = 1,
       })
+      if not stop_ok then
+        local normalized_stop_error = normalize_runtime_error(stop_error)
+        if is_interrupt_reason(normalized_stop_error) then
+          return abort_run(remote, logger, normalized_stop_error)
+        end
+        return nil, ("failed to read train position: %s (emergency stop also failed: %s)"):format(
+          tostring(normalized_position_error),
+          tostring(normalized_stop_error)
+        )
+      end
       return nil, "failed to read train position: " .. tostring(normalized_position_error)
     end
 

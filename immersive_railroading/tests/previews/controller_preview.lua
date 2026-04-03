@@ -378,8 +378,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   local profile = get_profile(state.profile_name)
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
+  local must_stop_now = stop_context and stop_context.must_stop_now
 
-  if state.final_forward_crawl then
+  if state.final_forward_crawl and not must_stop_now then
     return "drive"
   end
   if state.near_target_correction_active then
@@ -393,7 +394,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   if must_hold_brake then
     return "brake"
   end
-  if stop_context and stop_context.must_stop_now then
+  if must_stop_now then
     return "brake"
   end
   if stop_context and stop_context.in_no_reverse_approach and not state.near_target_correction_active then
