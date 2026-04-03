@@ -16,6 +16,35 @@ local function ema(previous, sample, memory_s, dt_s)
   return previous + (sample - previous) * alpha
 end
 
+local function get_nested(source, path)
+  local cursor = source
+  for _, key in ipairs(path) do
+    if type(cursor) ~= "table" then
+      return nil
+    end
+    cursor = cursor[key]
+  end
+  return cursor
+end
+
+local function pick_number(source, paths)
+  if type(source) ~= "table" then
+    return nil
+  end
+
+  for _, path in ipairs(paths) do
+    local value = get_nested(source, path)
+    if type(value) == "string" then
+      value = tonumber(value)
+    end
+    if type(value) == "number" then
+      return value
+    end
+  end
+
+  return nil
+end
+
 local function derive_pid(mass_kg, power_w, traction_n, cruise_kmh, brake_mps2)
   local v_ref_mps = math.max(cruise_kmh / 3.6, 4.0)
   local a_drive = math.min(traction_n / mass_kg, power_w / math.max(v_ref_mps, 1) / mass_kg)
@@ -43,6 +72,72 @@ local function stop_speed_cap(remaining_m, stop_buffer_m, brake_mps2, cruise_kmh
   )
 end
 
+local function target_speed_cap(distance_to_target_m, lateral_error_m, stop_buffer_m, brake_mps2, cruise_kmh)
+  local cruise_mps = cruise_kmh / 3.6
+  local cap = stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_mps2, cruise_kmh)
+  local terminal_stop_zone_m = math.max(stop_buffer_m, 1.5 + 0.75)
+  if distance_to_target_m <= terminal_stop_zone_m and lateral_error_m <= 1.5 then
+    return 0
+  end
+  return math.min(cap, cruise_mps)
+end
+
+local function extract_characteristics(info, consist, requested_cruise_kmh)
+  local mass_paths = {
+    {"weight_kg"},
+    {"mass_kg"},
+    {"weight"},
+  }
+  local traction_paths = {
+    {"total_traction_N"},
+    {"traction"},
+  }
+  local power_paths = {
+    {"power_w"},
+    {"power_kw"},
+  }
+  local horsepower_paths = {
+    {"horsepower"},
+  }
+  local max_speed_paths = {
+    {"max_speed"},
+    {"max_speed_kmh"},
+  }
+
+  local mass_kg = pick_number(consist, mass_paths)
+    or pick_number(info, mass_paths)
+    or 425000
+
+  local traction_n = pick_number(consist, traction_paths)
+    or pick_number(info, traction_paths)
+    or 180000
+
+  local power_w = pick_number(info, power_paths)
+    or pick_number(consist, power_paths)
+  if power_w and power_w < 10000 then
+    power_w = power_w * 1000
+  end
+  if not power_w then
+    local horsepower = pick_number(info, horsepower_paths)
+      or pick_number(consist, horsepower_paths)
+    if horsepower then
+      power_w = horsepower * 745.7
+    end
+  end
+  power_w = power_w or 1800000
+
+  local max_speed_kmh = pick_number(info, max_speed_paths)
+    or pick_number(consist, max_speed_paths)
+    or 65
+
+  return {
+    mass_kg = mass_kg,
+    traction_n = traction_n,
+    power_w = power_w,
+    cruise_kmh = clamp(requested_cruise_kmh or 40, 1, math.max(max_speed_kmh, 1)),
+  }
+end
+
 local pid = derive_pid(90000, 3000000, 200000, 38.25, 1.23)
 assert(math.abs(pid.kp - 0.0942) < 0.002, "unexpected kp")
 assert(math.abs(pid.ki - 0.0109) < 0.002, "unexpected ki")
@@ -56,6 +151,39 @@ local stop_cap_long = stop_speed_cap(400, 3, 1.23, 76.464)
 assert(math.abs(stop_cap_short - 7.36) < 0.05, "unexpected short stop cap")
 assert(math.abs(stop_cap_long - 21.24) < 0.05, "unexpected long stop cap")
 
+local lateral_regression_cap = target_speed_cap(
+  math.sqrt(0.68 ^ 2 + 147.5 ^ 2),
+  147.5,
+  3,
+  0.863,
+  55
+)
+assert(math.abs(lateral_regression_cap - (55 / 3.6)) < 0.05, "lateral frame regression collapsed cap")
+
+local extracted = extract_characteristics(
+  {
+    horsepower = 2549,
+    traction = 194161,
+    max_speed = 76.465505226481,
+    weight = 80930,
+  },
+  {
+    weight_kg = 100493,
+    total_traction_N = 194161,
+  },
+  55
+)
+assert(math.abs(extracted.mass_kg - 100493) < 0.001, "expected consist mass")
+assert(math.abs(extracted.traction_n - 194161) < 0.001, "expected consist traction")
+assert(math.abs(extracted.power_w - 1900789.3) < 1, "expected horsepower conversion")
+assert(math.abs(extracted.cruise_kmh - 55) < 0.001, "expected requested cruise")
+
 print(("pid ok: kp=%.4f ki=%.4f kd=%.4f"):format(pid.kp, pid.ki, pid.kd))
 print(("brake learning ok: %.3f m/s^2"):format(learned))
 print(("stop profile ok: %.2f m/s at 25m, %.2f m/s at 400m"):format(stop_cap_short, stop_cap_long))
+print(("lateral frame regression ok: %.2f m/s cap stays above zero"):format(lateral_regression_cap))
+print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
+  extracted.mass_kg,
+  extracted.traction_n,
+  extracted.power_w
+))

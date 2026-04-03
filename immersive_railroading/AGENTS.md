@@ -45,6 +45,7 @@
 - Treat the PrismLauncher Minecraft instance as inspect-only.
 - Do not invent APIs or in-game behavior. Inspect local files, jars, docs, or tests first.
 - Keep docs compact and progressive rather than repetitive.
+- Update this AGENT.md only with direct permission; other documentations (expect for files under docs/plans) can be updated automatically if needed.
 - Comments should explain mainly why a decision exists.
 - Preserve the separation between the real controller and future skeleton programs.
 - Run local Lua previews and `luac -p` after edits.

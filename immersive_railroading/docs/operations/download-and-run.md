@@ -25,6 +25,8 @@ Why this is the preferred entrypoint:
 ## Update Flow
 - Replace `main` with a branch, tag, or commit ref when you want reproducible installs.
 - Re-run `lua programs/ir_install.lua` after updating `programs/install_manifest.lua`.
+- Current branch work is happening on `PID-Regler`.
+- `programs/install_manifest.lua` still points to `main`, so branch-specific controller testing is safer with direct `wget` for the individual files you want to deploy.
 
 ## Train Controller Invocation
 Preferred OpenOS entrypoint:
@@ -47,6 +49,18 @@ Why this matters:
 - OpenOS `lua` parses command-line options before your script runs.
 - Without the separating `--`, negative coordinates like `-35` and flags like `--log` never reach `train_controller.lua`.
 - `trainctl` avoids that pre-processing and passes the arguments through unchanged.
+
+## Test-World Log Location
+The current OpenComputers test machine writes logs under:
+
+`~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/TEST (1)/opencomputers/6999b5c9-34da-42d3-9ab9-c02972b55cfc/home/immersive_railroading/programs/`
+
+Useful real examples from that directory:
+- `train_controller.log`
+- `reverse_test.log`
+- `reverse_test1.log`
+
+That path is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
 
 ## Safety Notes
 - The installer rejects:
