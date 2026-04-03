@@ -129,8 +129,8 @@ end
 local function target_speed_cap(distance_to_target_m, lateral_error_m, stop_buffer_m, brake_mps2, cruise_kmh)
   local cruise_mps = cruise_kmh / 3.6
   local cap = stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_mps2, cruise_kmh)
-  local terminal_stop_zone_m = math.max(stop_buffer_m, 1.5 + 0.75)
-  if distance_to_target_m <= terminal_stop_zone_m and lateral_error_m <= 1.5 then
+  local terminal_stop_zone_m = math.max(stop_buffer_m, DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m)
+  if distance_to_target_m <= terminal_stop_zone_m and lateral_error_m <= DEFAULTS.arrival_lateral_m then
     return 0
   end
   return math.min(cap, cruise_mps)
@@ -257,17 +257,19 @@ end
 
 local function must_stop_now_fn(distance_to_target_m, speed_toward_target_mps, stop_buffer_m, brake_mps2)
   local required_stop_m = required_stop_distance_m(speed_toward_target_mps, stop_buffer_m, brake_mps2)
-  return speed_toward_target_mps > 0.35 and required_stop_m + 1.5 >= distance_to_target_m
+  return speed_toward_target_mps > DEFAULTS.arrival_speed_mps
+    and required_stop_m + DEFAULTS.approach_stop_margin_m >= distance_to_target_m
 end
 
 local function must_stop_now_for_profile(distance_to_target_m, speed_toward_target_mps, stop_buffer_m, brake_mps2, profile_name)
   local profile = get_profile(profile_name)
   local required_stop_m = required_stop_distance_m(speed_toward_target_mps, stop_buffer_m, brake_mps2)
-  return speed_toward_target_mps > 0.35 and required_stop_m + profile.required_stop_margin_m >= distance_to_target_m
+  return speed_toward_target_mps > DEFAULTS.arrival_speed_mps
+    and required_stop_m + profile.required_stop_margin_m >= distance_to_target_m
 end
 
 local function parse_cli_profile(argv)
-  local profile_name = "conservative"
+  local profile_name = DEFAULTS.profile
   local index = 1
   while index <= #argv do
     local value = argv[index]
@@ -300,22 +302,22 @@ end
 
 local function should_suppress_reverse_recovery(raw_desired_reverser, active_reverser, distance_to_target_m, speed_toward_target_mps, lateral_error_m)
   return raw_desired_reverser ~= active_reverser
-    and distance_to_target_m <= 18
-    and math.abs(speed_toward_target_mps) > 0.35
-    and lateral_error_m <= math.max(6.0, distance_to_target_m * 0.9)
+    and distance_to_target_m <= DEFAULTS.overshoot_recovery_distance_m
+    and math.abs(speed_toward_target_mps) > DEFAULTS.arrival_speed_mps
+    and lateral_error_m <= math.max(DEFAULTS.arrival_lateral_m * 4, distance_to_target_m * 0.9)
 end
 
 local function is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
-  return distance_to_target_m <= 3.75
-    and longitudinal_distance_m <= 2.5
-    and lateral_error_m <= 3.0
-    and math.abs(speed_toward_target_mps) <= 0.35
+  return distance_to_target_m <= DEFAULTS.near_target_arrival_distance_m
+    and longitudinal_distance_m <= DEFAULTS.near_target_arrival_longitudinal_m
+    and lateral_error_m <= DEFAULTS.near_target_arrival_lateral_m
+    and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
 end
 
 local function is_near_target_correction_candidate(distance_to_target_m, longitudinal_distance_m, lateral_error_m)
-  return distance_to_target_m <= 8.0
-    and longitudinal_distance_m <= 5.0
-    and lateral_error_m <= 6.0
+  return distance_to_target_m <= DEFAULTS.near_target_correction_distance_m
+    and longitudinal_distance_m <= DEFAULTS.near_target_correction_longitudinal_m
+    and lateral_error_m <= DEFAULTS.near_target_correction_lateral_m
 end
 
 local function should_release_near_target_correction(stop_first_active, stopped_after_overshoot, distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
@@ -330,32 +332,32 @@ local function should_use_final_forward_crawl(profile_name, longitudinal_error_m
   return profile.name == "conservative"
     and in_no_reverse_approach
     and not stop_now_flag
-    and longitudinal_error_m > 1.5
+    and longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
     and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
 end
 
 local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, in_no_reverse_approach)
   return in_no_reverse_approach
-    and math.abs(speed_toward_target_mps) <= 0.35
-    and math.abs(axis_speed_mps) <= 0.35
-    and distance_to_target_m > 3.75
-    and lateral_error_m > 3.0
-    and longitudinal_distance_m > 2.5
+    and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
+    and math.abs(axis_speed_mps) <= DEFAULTS.arrival_speed_mps
+    and distance_to_target_m > DEFAULTS.near_target_arrival_distance_m
+    and lateral_error_m > DEFAULTS.near_target_arrival_lateral_m
+    and longitudinal_distance_m > DEFAULTS.near_target_arrival_longitudinal_m
 end
 
 local function should_force_moving_away_brake(state, speed_toward_target_mps)
-  if speed_toward_target_mps > -0.15 then
+  if speed_toward_target_mps > -DEFAULTS.move_away_brake_speed_mps then
     return false
   end
   if state.startup_guard_active then
-    if speed_toward_target_mps <= -2.5 then
+    if speed_toward_target_mps <= -DEFAULTS.startup_guard_brake_speed_mps then
       return true
     end
-    if state.moving_away_confidence < 0.95 or state.progress_speed_mps > -1.0 then
+    if state.moving_away_confidence < 0.95 or state.progress_speed_mps > DEFAULTS.startup_guard_progress_floor_mps then
       return false
     end
   end
-  if state.curve_guard_active and state.moving_away_confidence < 0.55 then
+  if state.curve_guard_active and state.moving_away_confidence < DEFAULTS.moving_away_confidence_threshold then
     return false
   end
   return true
@@ -387,7 +389,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     return "drive"
   end
   if state.near_target_correction_active then
-    if math.abs(speed_toward_target_mps) <= 0.4 then
+    if math.abs(speed_toward_target_mps) <= DEFAULTS.reverser_switch_speed_mps then
       return "drive"
     end
     if should_force_moving_away_brake(state, speed_toward_target_mps) then
@@ -403,13 +405,13 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   if stop_context and stop_context.in_no_reverse_approach and not state.near_target_correction_active then
     return "brake"
   end
-  if distance_to_target_m <= 1.5 * 4 and not state.near_target_correction_active then
+  if distance_to_target_m <= DEFAULTS.arrival_distance_m * 4 and not state.near_target_correction_active then
     return "brake"
   end
   if should_force_moving_away_brake(state, speed_toward_target_mps) then
     return "brake"
   end
-  if overspeed >= 0.35 then
+  if overspeed >= DEFAULTS.enter_brake_margin_mps then
     return "brake"
   end
   if state.mode == "brake"
@@ -417,19 +419,19 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     and overspeed >= -profile.brake_exit_margin_mps then
     return "brake"
   end
-  if target_speed_mps <= 0.35 * 2 then
+  if target_speed_mps <= DEFAULTS.arrival_speed_mps * 2 then
     return "coast"
   end
   return "drive"
 end
 
 local function approach_stop_brake(speed_toward_target_mps, overspeed)
-  if speed_toward_target_mps <= 0.35 then
+  if speed_toward_target_mps <= DEFAULTS.arrival_speed_mps then
     return 0
   end
-  local brake = clamp(math.max(overspeed, 0.35) / 0.35, 0, 1)
-  if brake > 0 and brake < 0.2 then
-    brake = 0.2
+  local brake = clamp(math.max(overspeed, DEFAULTS.arrival_speed_mps) / DEFAULTS.arrival_speed_mps, 0, 1)
+  if brake > 0 and brake < DEFAULTS.approach_stop_min_brake then
+    brake = DEFAULTS.approach_stop_min_brake
   end
   return brake
 end
