@@ -209,10 +209,42 @@ local function is_near_target_arrival(distance_to_target_m, longitudinal_distanc
     and math.abs(speed_toward_target_mps) <= 0.35
 end
 
+local function is_near_target_correction_candidate(distance_to_target_m, longitudinal_distance_m, lateral_error_m)
+  return distance_to_target_m <= 8.0
+    and longitudinal_distance_m <= 5.0
+    and lateral_error_m <= 6.0
+end
+
 local function should_release_near_target_correction(stop_first_active, stopped_after_overshoot, distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
   return stop_first_active
     and stopped_after_overshoot
+    and is_near_target_correction_candidate(distance_to_target_m, longitudinal_distance_m, lateral_error_m)
     and not is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
+end
+
+local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, must_stop_now)
+  local overspeed = speed_toward_target_mps - target_speed_mps
+  if state.near_target_correction_active then
+    if math.abs(speed_toward_target_mps) <= 0.4 then
+      return "drive"
+    end
+    if speed_toward_target_mps <= -0.15 then
+      return "brake"
+    end
+  end
+  if must_stop_now then
+    return "brake"
+  end
+  if distance_to_target_m <= 1.5 * 4 and not state.near_target_correction_active then
+    return "brake"
+  end
+  if overspeed >= 0.35 then
+    return "brake"
+  end
+  if state.mode == "brake" and not state.near_target_correction_active and overspeed >= -0.9 then
+    return "brake"
+  end
+  return "drive"
 end
 
 local function approach_stop_brake(speed_toward_target_mps, overspeed)
@@ -286,6 +318,18 @@ assert(
 assert(
   should_release_near_target_correction(true, false, 5.5, 4.2, 2.0, 0.0) == false,
   "near-target correction must stay blocked until stop-first has produced a confirmed halt"
+)
+assert(
+  should_release_near_target_correction(true, true, 13.96, 7.21, 11.96, 0.0) == false,
+  "a log11-sized residual miss should be treated as a near-target limit, not as a micro-correction candidate"
+)
+assert(
+  select_motion_mode({mode = "brake", near_target_correction_active = true}, 0.02, 0.8, 7.24, false) == "drive",
+  "active near-target correction must be able to leave brake mode from a near-stop state"
+)
+assert(
+  select_motion_mode({mode = "brake", near_target_correction_active = false}, 0.02, 0.8, 3.0, false) == "brake",
+  "without near-target correction the close-range brake bias should remain active"
 )
 assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
 

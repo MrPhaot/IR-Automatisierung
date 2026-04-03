@@ -64,6 +64,8 @@ Useful real examples from that directory:
 - `reverse_test5.log`
 - `reverse_test7.log`
 - `reverse_test8.log`
+- `reverse_test10.log`
+- `reverse_test11.log`
 
 That path is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
 
@@ -72,6 +74,8 @@ Current interpretation of those reference logs:
 - `reverse_test4.log` is a curve-target case and should be treated as a documented V1 limitation, not the baseline acceptance test for the straight-line controller.
 - `reverse_test7.log` showed that small near-target roll-away must still stop first instead of immediately flipping into reverse recovery.
 - `reverse_test8.log` showed the follow-up edge case: after stop-first, the controller must either accept a small residual miss as near-target arrival or start only a tiny correction move, rather than deadlocking a few meters short.
+- `reverse_test10.log` showed the next refinement: after `stop_first`, the controller must let a valid micro-correction actually leave brake mode instead of staying in a `brake=0`, `throttle=0` deadlock.
+- `reverse_test11.log` is the same scenario with `stop_buffer_m=1`; it makes it easier to see when the residual miss is already too large for a micro-correction and should be logged as a V1 limit instead.
 
 ## Safety Notes
 - The installer rejects:
