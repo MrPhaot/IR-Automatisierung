@@ -35,6 +35,7 @@ Preferred OpenOS entrypoint:
 cd /home/immersive_railroading/programs
 trainctl inspect --log
 trainctl goto -120 64 -35 40 3 --log=test.log
+trainctl goto -120 64 -35 40 3 --profile=fast --log=test-fast.log
 ```
 
 Fallback when you explicitly want to invoke the Lua frontend:
@@ -49,6 +50,8 @@ Why this matters:
 - OpenOS `lua` parses command-line options before your script runs.
 - Without the separating `--`, negative coordinates like `-35` and flags like `--log` never reach `train_controller.lua`.
 - `trainctl` avoids that pre-processing and passes the arguments through unchanged.
+- If you omit `--profile`, `trainctl goto` defaults to `conservative`.
+- `stop_buffer_m` still defines the stop point separately from the profile choice; it does not replace `--profile`.
 
 ## Test-World Log Location
 The current OpenComputers test machine writes logs under:
@@ -76,6 +79,7 @@ Current interpretation of those reference logs:
 - `reverse_test8.log` showed the follow-up edge case: after stop-first, the controller must either accept a small residual miss as near-target arrival or start only a tiny correction move, rather than deadlocking a few meters short.
 - `reverse_test10.log` showed the next refinement: after `stop_first`, the controller must let a valid micro-correction actually leave brake mode instead of staying in a `brake=0`, `throttle=0` deadlock.
 - `reverse_test11.log` is the same scenario with `stop_buffer_m=1`; it makes it easier to see when the residual miss is already too large for a micro-correction and should be logged as a V1 limit instead.
+- `reverse_test12.log` and `reverse_test13.log` showed the next tuning target: the default profile should brake early enough that straight-line arrivals do not need to fall back to reverse recovery in the first place.
 
 ## Safety Notes
 - The installer rejects:

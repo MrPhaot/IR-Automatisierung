@@ -31,9 +31,15 @@ local kd = kp * math.min(t_drive, t_brake)
 - The `goto` command only knows a point target in V1.
 - A remaining-distance speed cap based on `sqrt(2ad)` gives the controller a simple braking boundary that adapts as the learned brake model improves.
 - This is safer than trying to brake only when already near the target.
+- The default `conservative` profile intentionally scales that end-phase envelope down further so the train is more likely to stop without any reverse recovery on straight target runs.
 - The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
 - Near-target overshoots now follow a `stop_first` rule: brake to a real halt first, then either accept a small residual miss as `near_target_arrival` or allow only a very small correction move.
 - That near-target resolution is intentionally split into phases: `stop_first` handles the stop itself, then a second decision chooses `near_target_arrival`, a limited `near_target_correction`, or a logged V1 limit if the residual miss is already too large for a tiny correction.
+
+## Profile Modes
+- `conservative` is the default profile when no explicit flag is passed to `trainctl goto`.
+- `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and making it harder for the controller to re-enter drive mode near the target.
+- `fast` keeps a looser end-phase envelope and allows more residual dynamics, so it stays closer to the old behavior and may still need fallback recovery more often.
 
 ## Why Distance And Motion Axis Are Now Separate
 - The real target is still a point in world space, so braking and arrival decisions use full point distance instead of only a projection onto the current motion frame.

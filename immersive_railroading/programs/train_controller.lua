@@ -1,6 +1,7 @@
 local DEFAULTS = {
   cruise_kmh = 40,
   stop_buffer_m = 2,
+  profile = "conservative",
   arrival_distance_m = 1.5,
   arrival_longitudinal_m = 1.5,
   arrival_lateral_m = 1.5,
@@ -62,6 +63,33 @@ local DEFAULTS = {
   axis_capture_speed_mps = 0.75,
   axis_capture_alignment_min = 0.75,
   axis_lock_speed_mps = 0.5,
+}
+
+local PROFILES = {
+  conservative = {
+    name = "conservative",
+    stop_cap_brake_scale = 0.6,
+    required_stop_margin_m = 5.0,
+    no_reverse_distance_m = 42.0,
+    force_brake_distance_m = 24.0,
+    approach_stop_target_speed_scale = 0.55,
+    approach_stop_throttle_scale = 0.45,
+    launch_throttle_scale = 0.75,
+    brake_exit_margin_mps = 0.2,
+    end_phase_integral_decay = 0.35,
+  },
+  fast = {
+    name = "fast",
+    stop_cap_brake_scale = 1.0,
+    required_stop_margin_m = 1.5,
+    no_reverse_distance_m = 22.0,
+    force_brake_distance_m = 10.0,
+    approach_stop_target_speed_scale = 0.9,
+    approach_stop_throttle_scale = 1.0,
+    launch_throttle_scale = 1.0,
+    brake_exit_margin_mps = 0.9,
+    end_phase_integral_decay = 0.85,
+  },
 }
 
 local INFO_PATHS = {
@@ -149,6 +177,14 @@ end
 local function round(value, digits)
   local factor = 10 ^ (digits or 0)
   return math.floor(value * factor + 0.5) / factor
+end
+
+local function get_profile(name)
+  local profile = PROFILES[name or DEFAULTS.profile]
+  if not profile then
+    error(("invalid profile: %s (expected conservative or fast)"):format(tostring(name)))
+  end
+  return profile
 end
 
 local function split_path(path)
@@ -491,9 +527,14 @@ local function derive_pid(characteristics, brake_model)
   }
 end
 
-local function stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_model, cruise_mps)
+local function stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_model, cruise_mps, profile)
+  profile = profile or get_profile()
   local usable_distance = math.max(distance_to_target_m - stop_buffer_m, 0)
-  local stop_cap = math.sqrt(2 * math.max(brake_model.full_service_mps2, DEFAULTS.min_brake_mps2) * usable_distance)
+  local effective_brake_mps2 = math.max(
+    math.max(brake_model.full_service_mps2, DEFAULTS.min_brake_mps2) * profile.stop_cap_brake_scale,
+    DEFAULTS.min_brake_mps2
+  )
+  local stop_cap = math.sqrt(2 * effective_brake_mps2 * usable_distance)
   return math.min(cruise_mps, stop_cap)
 end
 
@@ -544,7 +585,8 @@ local function is_near_target_correction_candidate(distance_to_target_m, longitu
     and lateral_error_m <= DEFAULTS.near_target_correction_lateral_m
 end
 
-local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
+local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile)
+  profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
 
@@ -565,6 +607,10 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     return "brake"
   end
 
+  if stop_context and stop_context.in_no_reverse_approach and not state.near_target_correction_active then
+    return "brake"
+  end
+
   if distance_to_target_m <= DEFAULTS.arrival_distance_m * 4 and not state.near_target_correction_active then
     return "brake"
   end
@@ -579,7 +625,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     return "brake"
   end
 
-  if state.mode == "brake" and not state.near_target_correction_active and overspeed >= -DEFAULTS.exit_brake_margin_mps then
+  if state.mode == "brake" and not state.near_target_correction_active and overspeed >= -profile.brake_exit_margin_mps then
     return "brake"
   end
 
@@ -690,12 +736,13 @@ local function inspect(remote, requested_cruise_kmh, logger)
   end
 end
 
-local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m, logger)
+local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m, profile_name, logger)
   local info, info_error = read_info(remote)
   if not info then
     return nil, "failed to read train info: " .. tostring(info_error)
   end
 
+  local profile = get_profile(profile_name)
   local consist = read_consist(remote)
   local characteristics = extract_characteristics(info, consist, requested_cruise_kmh)
   local brake_model = {full_service_mps2 = DEFAULTS.fallback_brake_mps2, samples = 0}
@@ -795,17 +842,33 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local speed_toward_target_mps = axis_speed_mps * desired_reverser
 
     local pid = derive_pid(characteristics, brake_model)
-    local target_speed_mps = stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_model, characteristics.cruise_mps)
+    local target_speed_mps = stop_speed_cap(
+      distance_to_target_m,
+      stop_buffer_m,
+      brake_model,
+      characteristics.cruise_mps,
+      profile
+    )
     if distance_to_target_m <= terminal_stop_zone_m and lateral_error_m <= DEFAULTS.arrival_lateral_m then
       target_speed_mps = 0
     end
     local required_stop_m = required_stop_distance_m(math.max(speed_toward_target_mps, 0), stop_buffer_m, brake_model)
     local stop_context = {
       required_stop_m = required_stop_m,
-      in_approach_stop = distance_to_target_m <= math.max(DEFAULTS.approach_stop_distance_m, required_stop_m + DEFAULTS.approach_stop_margin_m),
+      in_approach_stop = distance_to_target_m <= math.max(
+        DEFAULTS.approach_stop_distance_m,
+        required_stop_m + DEFAULTS.approach_stop_margin_m
+      ),
+      in_no_reverse_approach = distance_to_target_m <= math.max(
+        profile.no_reverse_distance_m,
+        required_stop_m + profile.required_stop_margin_m
+      ),
       must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
-        and required_stop_m + DEFAULTS.approach_stop_margin_m >= distance_to_target_m,
+        and required_stop_m + profile.required_stop_margin_m >= distance_to_target_m,
     }
+    if stop_context.in_no_reverse_approach then
+      target_speed_mps = math.min(target_speed_mps, characteristics.cruise_mps * profile.approach_stop_target_speed_scale)
+    end
     local suppress_reverse_recovery = should_suppress_reverse_recovery(
       raw_desired_reverser,
       state.active_reverser,
@@ -826,6 +889,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       required_stop_m = required_stop_distance_m(math.max(speed_toward_target_mps, 0), stop_buffer_m, brake_model)
       stop_context.required_stop_m = required_stop_m
       stop_context.in_approach_stop = true
+      stop_context.in_no_reverse_approach = true
       stop_context.must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
     end
     if state.stop_first_active then
@@ -833,6 +897,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       speed_toward_target_mps = axis_speed_mps * desired_reverser
       target_speed_mps = math.min(target_speed_mps, DEFAULTS.arrival_speed_mps)
       stop_context.in_approach_stop = true
+      stop_context.in_no_reverse_approach = true
       stop_context.must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
 
       if math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps then
@@ -966,10 +1031,20 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           state.reason = "speed_tracking"
         end
 
-        state.mode = select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
+        state.mode = select_motion_mode(
+          state,
+          speed_toward_target_mps,
+          target_speed_mps,
+          distance_to_target_m,
+          stop_context,
+          profile
+        )
 
         if state.mode == "drive" then
           state.reason = state.phase == "reverse_launch" and "restart_after_reverse" or "speed_tracking"
+          if stop_context.in_approach_stop or stop_context.in_no_reverse_approach then
+            integral = integral * profile.end_phase_integral_decay
+          end
           integral = clamp(integral + speed_error * dt_s, -target_speed_mps * 2, target_speed_mps * 2)
           local derivative = (speed_error - previous_error) / dt_s
           local effort = pid.kp * speed_error + pid.ki * integral + pid.kd * derivative
@@ -979,11 +1054,25 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
             or DEFAULTS.cruise_throttle_limit
 
           if math.abs(speed_toward_target_mps) <= DEFAULTS.restart_from_stop_speed_mps then
-            throttle_limit = math.min(throttle_limit, DEFAULTS.launch_throttle_limit * weight_factor)
+            throttle_limit = math.min(
+              throttle_limit,
+              DEFAULTS.launch_throttle_limit * weight_factor * profile.launch_throttle_scale
+            )
           end
 
           if stop_context.in_approach_stop then
-            throttle_limit = math.min(throttle_limit, DEFAULTS.approach_stop_throttle_limit * weight_factor)
+            throttle_limit = math.min(
+              throttle_limit,
+              DEFAULTS.approach_stop_throttle_limit * weight_factor * profile.approach_stop_throttle_scale
+            )
+          end
+
+          if stop_context.in_no_reverse_approach then
+            throttle_limit = math.min(
+              throttle_limit,
+              DEFAULTS.approach_stop_throttle_limit * weight_factor * profile.approach_stop_throttle_scale
+            )
+            state.reason = "no_reverse_approach"
           end
 
           if stop_context.must_stop_now then
@@ -1028,6 +1117,15 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
               compute_brake_command(
                 math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
                 DEFAULTS.min_brake_command
+              )
+            )
+          elseif stop_context.in_no_reverse_approach then
+            state.reason = "final_brake_hold"
+            brake = math.max(
+              DEFAULTS.approach_stop_min_brake,
+              compute_brake_command(
+                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
+                DEFAULTS.approach_stop_min_brake
               )
             )
           elseif switching_reverser then
@@ -1104,11 +1202,13 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s required_stop=%.2fm approach_stop=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
         state.phase,
         state.reason,
+        profile.name,
+        stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal",
         distance_to_target_m,
         longitudinal_error_m,
         lateral_error_m,
@@ -1118,6 +1218,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         tostring(state.axis_frozen),
         required_stop_m,
         tostring(stop_context.in_approach_stop),
+        tostring(stop_context.in_no_reverse_approach),
         tostring(state.stop_first_active),
         tostring(state.near_target_correction_active),
         state.near_target_resolution,
@@ -1147,6 +1248,7 @@ end
 local function parse_cli(argv)
   local positional = {}
   local log_path = nil
+  local profile_name = DEFAULTS.profile
   local index = 1
 
   while index <= #argv do
@@ -1163,15 +1265,29 @@ local function parse_cli(argv)
     elseif value:match("^%-%-log=") then
       log_path = value:match("^%-%-log=(.+)$")
       index = index + 1
+    elseif value == "--profile" then
+      local next_value = argv[index + 1]
+      if next_value and next_value ~= "" and next_value:sub(1, 2) ~= "--" then
+        profile_name = next_value
+        index = index + 2
+      else
+        error("missing value for --profile (expected conservative or fast)")
+      end
+    elseif value:match("^%-%-profile=") then
+      profile_name = value:match("^%-%-profile=(.+)$")
+      index = index + 1
     else
       positional[#positional + 1] = value
       index = index + 1
     end
   end
 
+  get_profile(profile_name)
+
   return {
     argv = positional,
     log_path = log_path,
+    profile_name = profile_name,
   }
 end
 
@@ -1183,18 +1299,18 @@ local function parse_number(label, value)
   return number
 end
 
-local function parse_goto_parameters(argv)
+local function parse_goto_parameters(argv, profile_name)
   local cruise_kmh = argv[5] and parse_number("cruise_kmh", argv[5]) or DEFAULTS.cruise_kmh
   local stop_buffer_m = argv[6] and parse_number("stop_buffer_m", argv[6]) or DEFAULTS.stop_buffer_m
-  return cruise_kmh, stop_buffer_m
+  return cruise_kmh, stop_buffer_m, get_profile(profile_name).name
 end
 
 local function usage()
   io.write("usage:\n")
   io.write("  trainctl inspect [--log[=path]]\n")
-  io.write("  trainctl goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log[=path]]\n")
+  io.write("  trainctl goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--profile=conservative|fast] [--log[=path]]\n")
   io.write("  lua train_controller.lua -- inspect [--log[=path]]\n")
-  io.write("  lua train_controller.lua -- goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--log[=path]]\n")
+  io.write("  lua train_controller.lua -- goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--profile=conservative|fast] [--log[=path]]\n")
 end
 
 local function main(argv)
@@ -1232,18 +1348,19 @@ local function main(argv)
       y = parse_number("y", argv[3]),
       z = parse_number("z", argv[4]),
     }
-    local cruise_kmh, stop_buffer_m = parse_goto_parameters(argv)
+    local cruise_kmh, stop_buffer_m, profile_name = parse_goto_parameters(argv, cli.profile_name)
     if logger then
       emit_line(logger, ("logging to %s"):format(logger.path))
-      emit_line(logger, ("goto x=%s y=%s z=%s cruise_kmh=%s stop_buffer_m=%s"):format(
+      emit_line(logger, ("goto x=%s y=%s z=%s cruise_kmh=%s stop_buffer_m=%s profile=%s"):format(
         target.x,
         target.y,
         target.z,
         cruise_kmh,
-        stop_buffer_m
+        stop_buffer_m,
+        profile_name
       ))
     end
-    local ok, err = control_loop(remote, target, cruise_kmh, stop_buffer_m, logger)
+    local ok, err = control_loop(remote, target, cruise_kmh, stop_buffer_m, profile_name, logger)
     close_logger(logger)
     return ok, err
   end

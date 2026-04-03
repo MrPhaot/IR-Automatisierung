@@ -8,6 +8,29 @@ local function clamp(value, low, high)
   return value
 end
 
+local PROFILES = {
+  conservative = {
+    name = "conservative",
+    stop_cap_brake_scale = 0.6,
+    required_stop_margin_m = 5.0,
+    no_reverse_distance_m = 42.0,
+  },
+  fast = {
+    name = "fast",
+    stop_cap_brake_scale = 1.0,
+    required_stop_margin_m = 1.5,
+    no_reverse_distance_m = 22.0,
+  },
+}
+
+local function get_profile(name)
+  local profile = PROFILES[name or "conservative"]
+  if not profile then
+    error("invalid profile")
+  end
+  return profile
+end
+
 local function ema(previous, sample, memory_s, dt_s)
   if previous == nil then
     return sample
@@ -70,6 +93,12 @@ local function stop_speed_cap(remaining_m, stop_buffer_m, brake_mps2, cruise_kmh
     cruise_mps,
     math.sqrt(2 * brake_mps2 * math.max(remaining_m - stop_buffer_m, 0))
   )
+end
+
+local function profiled_stop_speed_cap(remaining_m, stop_buffer_m, brake_mps2, cruise_kmh, profile_name)
+  local profile = get_profile(profile_name)
+  local effective_brake_mps2 = math.max(brake_mps2 * profile.stop_cap_brake_scale, 0.2)
+  return stop_speed_cap(remaining_m, stop_buffer_m, effective_brake_mps2, cruise_kmh)
 end
 
 local function target_speed_cap(distance_to_target_m, lateral_error_m, stop_buffer_m, brake_mps2, cruise_kmh)
@@ -190,6 +219,30 @@ local function must_stop_now(distance_to_target_m, speed_toward_target_mps, stop
   return speed_toward_target_mps > 0.35 and required_stop_m + 1.5 >= distance_to_target_m
 end
 
+local function must_stop_now_for_profile(distance_to_target_m, speed_toward_target_mps, stop_buffer_m, brake_mps2, profile_name)
+  local profile = get_profile(profile_name)
+  local required_stop_m = required_stop_distance_m(speed_toward_target_mps, stop_buffer_m, brake_mps2)
+  return speed_toward_target_mps > 0.35 and required_stop_m + profile.required_stop_margin_m >= distance_to_target_m
+end
+
+local function parse_cli_profile(argv)
+  local profile_name = "conservative"
+  local index = 1
+  while index <= #argv do
+    local value = argv[index]
+    if value == "--profile" then
+      profile_name = argv[index + 1]
+      index = index + 2
+    elseif value:match("^%-%-profile=") then
+      profile_name = value:match("^%-%-profile=(.+)$")
+      index = index + 1
+    else
+      index = index + 1
+    end
+  end
+  return get_profile(profile_name).name
+end
+
 local function weight_approach_factor(mass_kg)
   local weight_ratio = clamp(mass_kg / 425000, 0.3, 2.5)
   return clamp(1.15 / math.sqrt(weight_ratio), 0.5, 1.1)
@@ -268,8 +321,14 @@ assert(math.abs(learned - 1.2300) < 0.01, "unexpected learned brake")
 
 local stop_cap_short = stop_speed_cap(25, 3, 1.23, 200)
 local stop_cap_long = stop_speed_cap(400, 3, 1.23, 76.464)
+local conservative_stop_cap = profiled_stop_speed_cap(25, 3, 1.23, 55, "conservative")
+local fast_stop_cap = profiled_stop_speed_cap(25, 3, 1.23, 55, "fast")
 assert(math.abs(stop_cap_short - 7.36) < 0.05, "unexpected short stop cap")
 assert(math.abs(stop_cap_long - 21.24) < 0.05, "unexpected long stop cap")
+assert(conservative_stop_cap < fast_stop_cap, "conservative profile should clamp the end-phase speed harder than fast")
+assert(parse_cli_profile({"goto", "1", "2", "3"}) == "conservative", "missing profile flag should default to conservative")
+assert(parse_cli_profile({"goto", "1", "2", "3", "--profile=fast"}) == "fast", "inline profile flag should parse")
+assert(parse_cli_profile({"goto", "1", "2", "3", "--profile", "conservative"}) == "conservative", "split profile flag should parse")
 
 local lateral_regression_cap = target_speed_cap(
   math.sqrt(0.68 ^ 2 + 147.5 ^ 2),
@@ -291,6 +350,14 @@ assert(
 assert(
   must_stop_now(3.47, 4.31, 3, 0.889) == true,
   "small remaining distance with high residual speed must force braking"
+)
+assert(
+  must_stop_now_for_profile(33.0, 7.27, 3, 1.392, "conservative") == true,
+  "conservative profile should force braking earlier on the same approach geometry"
+)
+assert(
+  must_stop_now_for_profile(33.0, 7.27, 3, 1.392, "fast") == false,
+  "fast profile should leave more room before forcing the same early braking decision"
 )
 assert(
   should_suppress_reverse_recovery(-1, 1, 5.46, 3.77, 4.42) == true,
