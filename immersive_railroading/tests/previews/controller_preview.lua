@@ -202,6 +202,19 @@ local function should_suppress_reverse_recovery(raw_desired_reverser, active_rev
     and lateral_error_m <= math.max(6.0, distance_to_target_m * 0.9)
 end
 
+local function is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
+  return distance_to_target_m <= 3.75
+    and longitudinal_distance_m <= 2.5
+    and lateral_error_m <= 3.0
+    and math.abs(speed_toward_target_mps) <= 0.35
+end
+
+local function should_release_near_target_correction(stop_first_active, stopped_after_overshoot, distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
+  return stop_first_active
+    and stopped_after_overshoot
+    and not is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
+end
+
 local function approach_stop_brake(speed_toward_target_mps, overspeed)
   if speed_toward_target_mps <= 0.35 then
     return 0
@@ -255,9 +268,25 @@ assert(
   should_suppress_reverse_recovery(-1, 1, 9.04, 4.14, 7.71) == true,
   "near-target overshoot should still suppress reverse recovery when lateral error tracks with distance"
 )
+assert(
+  should_suppress_reverse_recovery(-1, 1, 12.23, -0.29, 10.59) == false,
+  "after the overshoot has already been braked to a crawl, reverse recovery should wait for explicit stop-first state instead of re-triggering from raw geometry"
+)
 assert(math.abs(approach_stop_brake(7.02, -0.03) - 1.0) < 0.001, "approach stop should keep braking even when overspeed briefly dips below zero")
 assert(math.abs(approach_stop_brake(0.8, -0.2) - 1.0) < 0.001, "approach stop minimum brake should not release too early")
 assert(weight_approach_factor(200000) > weight_approach_factor(700000), "lighter train should allow a less conservative approach factor")
+assert(
+  is_near_target_arrival(3.35, 1.98, 2.71, 0.0) == true,
+  "a stopped near-target overshoot like log8 should resolve as near-target arrival instead of deadlocking"
+)
+assert(
+  should_release_near_target_correction(true, true, 5.5, 4.2, 2.0, 0.0) == true,
+  "after a confirmed stop outside the relaxed arrival window, a tiny correction phase should be allowed"
+)
+assert(
+  should_release_near_target_correction(true, false, 5.5, 4.2, 2.0, 0.0) == false,
+  "near-target correction must stay blocked until stop-first has produced a confirmed halt"
+)
 assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
 
 local extracted = extract_characteristics(

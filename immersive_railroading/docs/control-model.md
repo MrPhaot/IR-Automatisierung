@@ -32,6 +32,7 @@ local kd = kp * math.min(t_drive, t_brake)
 - A remaining-distance speed cap based on `sqrt(2ad)` gives the controller a simple braking boundary that adapts as the learned brake model improves.
 - This is safer than trying to brake only when already near the target.
 - The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
+- Near-target overshoots now follow a `stop_first` rule: brake to a real halt first, then either accept a small residual miss as `near_target_arrival` or allow only a very small correction move.
 
 ## Why Distance And Motion Axis Are Now Separate
 - The real target is still a point in world space, so braking and arrival decisions use full point distance instead of only a projection onto the current motion frame.
@@ -46,3 +47,4 @@ local kd = kp * math.min(t_drive, t_brake)
 - The frozen axis is a robustness fix, not a substitute for real track topology on curves, junctions, or station approaches
 - V1 is currently intended for point targets that lie on an approximately straight approach from the current train position
 - Targets that sit on curves without explicit intermediate waypoints remain outside the stable V1 envelope, as seen in `reverse_test4.log`
+- `reverse_test7.log` and `reverse_test8.log` refined the straight-line endgame: immediate reverse recovery near the target is intentionally blocked until the train has actually stopped

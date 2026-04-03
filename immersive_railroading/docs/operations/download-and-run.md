@@ -62,12 +62,16 @@ Useful real examples from that directory:
 - `reverse_test3.log`
 - `reverse_test4.log`
 - `reverse_test5.log`
+- `reverse_test7.log`
+- `reverse_test8.log`
 
 That path is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
 
 Current interpretation of those reference logs:
 - `reverse_test3.log` and `reverse_test5.log` are the main straight-line reference runs; they reach the target but were used to tune remaining overshoot in the last meters.
 - `reverse_test4.log` is a curve-target case and should be treated as a documented V1 limitation, not the baseline acceptance test for the straight-line controller.
+- `reverse_test7.log` showed that small near-target roll-away must still stop first instead of immediately flipping into reverse recovery.
+- `reverse_test8.log` showed the follow-up edge case: after stop-first, the controller must either accept a small residual miss as near-target arrival or start only a tiny correction move, rather than deadlocking a few meters short.
 
 ## Safety Notes
 - The installer rejects:
