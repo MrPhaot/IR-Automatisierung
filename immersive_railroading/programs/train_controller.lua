@@ -337,18 +337,6 @@ local function sleep_for(seconds)
     end
     return true, signal, a, b, c
   end
-  if type(os.sleep) == "function" then
-    local ok, result = pcall(os.sleep, seconds)
-    if not ok then
-      local reason = normalize_runtime_error(result)
-      if is_interrupt_reason(reason) then
-        return nil, reason
-      end
-      error(result)
-    end
-    return true
-  end
-
   local deadline = uptime() + seconds
   while uptime() < deadline do
   end

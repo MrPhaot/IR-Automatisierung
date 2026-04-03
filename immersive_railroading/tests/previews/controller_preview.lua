@@ -365,7 +365,7 @@ end
 
 local function normalize_runtime_error(reason)
   if type(reason) == "table" then
-    return reason.reason or reason.code or reason.message or reason[1] or tostring(reason)
+    return reason.reason or reason.code or tostring(reason)
   end
   return tostring(reason)
 end

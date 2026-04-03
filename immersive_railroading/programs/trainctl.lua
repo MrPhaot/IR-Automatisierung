@@ -5,7 +5,7 @@ end
 
 local function normalize_runtime_error(err)
   if type(err) == "table" then
-    return err.reason or err.code or err.message or err[1] or tostring(err)
+    return err.reason or err.code or tostring(err)
   end
   return tostring(err)
 end

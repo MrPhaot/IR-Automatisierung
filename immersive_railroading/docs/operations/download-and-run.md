@@ -78,9 +78,9 @@ That directory pattern is inspect-only for this project, but it is the quickest 
 Current interpretation of those reference logs:
 - `reverse_test3.log` and `reverse_test5.log` are the main straight-line reference runs; they reach the target but were used to tune remaining overshoot in the last meters.
 - `reverse_test4.log` is a curve-target case and should be treated as a documented V1 limitation, not the baseline acceptance test for the straight-line controller.
-- `reverse_test7.log` showed that small near-target roll-away must still stop first instead of immediately flipping into reverse recovery.
-- `reverse_test8.log` showed the follow-up edge case: after stop-first, the controller must either accept a small residual miss as near-target arrival or start only a tiny correction move, rather than deadlocking a few meters short.
-- `reverse_test10.log` showed the next refinement: after `stop_first`, the controller must let a valid micro-correction actually leave brake mode instead of staying in a `brake=0`, `throttle=0` deadlock.
+- `reverse_test7.log` demonstrated that small near-target roll-away must still stop first instead of immediately flipping into reverse recovery.
+- `reverse_test8.log` captures the follow-up edge case: after stop-first, the controller must either accept a small residual miss as near-target arrival or start only a tiny correction move, rather than deadlocking a few meters short.
+- `reverse_test10.log` highlighted the next refinement: after `stop_first`, the controller must let a valid micro-correction actually leave brake mode instead of staying in a `brake=0`, `throttle=0` deadlock.
 - `reverse_test11.log` is the same scenario with `stop_buffer_m=1`; it makes it easier to see when the residual miss is already too large for a micro-correction and should be logged as a V1 limit instead.
 - `reverse_test12.log` and `reverse_test13.log` showed the next tuning target: the default profile should brake early enough that straight-line arrivals do not need to fall back to reverse recovery in the first place.
 - `reverse_test14.log` is the main conservative-profile under-target reference: it brakes early enough to avoid reverse, but then stops too far short and must transition into a very slow final forward crawl instead of deadlocking.
