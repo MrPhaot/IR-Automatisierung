@@ -20,3 +20,10 @@ Gib mir den endgültigen Plan nur dann ab, wenn:
 2.1. der gesamte Plan (nicht nur ein Teil) ist eine Markdown-Datei
 3. Der andere Agent hat den Schreibezugriff nur auf diesen (/home/mrphaot/Dokumente/lua/minecraft) Ordner.
 4. Der Plan enthält ausgearbeitete und getestete Previews von den möglichen Implementierungen.
+
+trainctl goto 238 64 -77 55 3 --log=reverse_test17.log
+trainctl goto 238 64 -77 55 3 --profile=fast --log=reverse_test17.log
+wget -f https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/PID-Regler/immersive_railroading/programs/train_controller.lua train_controller.lua
+trainctl goto 238 64 -77 55 1 --log=reverse_test18.log
+trainctl goto 238 64 -77 55 6 --log=reverse_test19.log
+trainctl goto 238 64 -77 55 9 --log=reverse_test20.log
