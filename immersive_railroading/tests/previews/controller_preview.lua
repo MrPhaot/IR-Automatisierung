@@ -14,6 +14,8 @@ local PROFILES = {
     stop_cap_brake_scale = 0.6,
     required_stop_margin_m = 5.0,
     no_reverse_distance_m = 42.0,
+    forward_crawl_speed_mps = 0.6,
+    forward_crawl_release_speed_mps = 0.2,
   },
   fast = {
     name = "fast",
@@ -275,8 +277,20 @@ local function should_release_near_target_correction(stop_first_active, stopped_
     and not is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
 end
 
+local function should_use_final_forward_crawl(profile_name, longitudinal_error_m, speed_toward_target_mps, in_no_reverse_approach, must_stop_now)
+  local profile = get_profile(profile_name)
+  return profile.name == "conservative"
+    and in_no_reverse_approach
+    and not must_stop_now
+    and longitudinal_error_m > 1.5
+    and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, must_stop_now)
   local overspeed = speed_toward_target_mps - target_speed_mps
+  if state.final_forward_crawl then
+    return "drive"
+  end
   if state.near_target_correction_active then
     if math.abs(speed_toward_target_mps) <= 0.4 then
       return "drive"
@@ -397,6 +411,18 @@ assert(
 assert(
   select_motion_mode({mode = "brake", near_target_correction_active = false}, 0.02, 0.8, 3.0, false) == "brake",
   "without near-target correction the close-range brake bias should remain active"
+)
+assert(
+  should_use_final_forward_crawl("conservative", 9.74, 0.03, true, false) == true,
+  "log14-style conservative under-target state should switch into a slow final forward crawl"
+)
+assert(
+  should_use_final_forward_crawl("fast", 9.74, 0.03, true, false) == false,
+  "fast profile should not reuse the conservative final forward crawl path"
+)
+assert(
+  select_motion_mode({mode = "brake", near_target_correction_active = false, final_forward_crawl = true}, 0.03, 0.6, 21.08, false) == "drive",
+  "final forward crawl must be able to leave the conservative brake hold deadlock"
 )
 assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
 

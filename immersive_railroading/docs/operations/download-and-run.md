@@ -69,6 +69,9 @@ Useful real examples from that directory:
 - `reverse_test8.log`
 - `reverse_test10.log`
 - `reverse_test11.log`
+- `reverse_test14.log`
+- `reverse_test15.log`
+- `reverse_test16.log`
 
 That path is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
 
@@ -80,6 +83,9 @@ Current interpretation of those reference logs:
 - `reverse_test10.log` showed the next refinement: after `stop_first`, the controller must let a valid micro-correction actually leave brake mode instead of staying in a `brake=0`, `throttle=0` deadlock.
 - `reverse_test11.log` is the same scenario with `stop_buffer_m=1`; it makes it easier to see when the residual miss is already too large for a micro-correction and should be logged as a V1 limit instead.
 - `reverse_test12.log` and `reverse_test13.log` showed the next tuning target: the default profile should brake early enough that straight-line arrivals do not need to fall back to reverse recovery in the first place.
+- `reverse_test14.log` is the main conservative-profile under-target reference: it brakes early enough to avoid reverse, but then stops too far short and must transition into a very slow final forward crawl instead of deadlocking.
+- `reverse_test15.log` is the current good `fast`-profile straight-line reference with `stop_buffer_m=3`.
+- `reverse_test16.log` contains both `stop_buffer_m=1` profile runs, so it is the main side-by-side comparison for how `fast` and `conservative` diverge under a tighter stop point.
 
 ## Safety Notes
 - The installer rejects:

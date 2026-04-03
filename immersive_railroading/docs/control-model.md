@@ -38,7 +38,7 @@ local kd = kp * math.min(t_drive, t_brake)
 
 ## Profile Modes
 - `conservative` is the default profile when no explicit flag is passed to `trainctl goto`.
-- `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and making it harder for the controller to re-enter drive mode near the target.
+- `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and preferring a very slow final forward crawl over any reverse recovery when the train ends up stopping short.
 - `fast` keeps a looser end-phase envelope and allows more residual dynamics, so it stays closer to the old behavior and may still need fallback recovery more often.
 
 ## Why Distance And Motion Axis Are Now Separate
@@ -56,3 +56,4 @@ local kd = kp * math.min(t_drive, t_brake)
 - Targets that sit on curves without explicit intermediate waypoints remain outside the stable V1 envelope, as seen in `reverse_test4.log`
 - `reverse_test7.log` and `reverse_test8.log` refined the straight-line endgame: immediate reverse recovery near the target is intentionally blocked until the train has actually stopped
 - `reverse_test10.log` and `reverse_test11.log` further show that micro-correction is only meant for small to moderate residual misses; larger misses after the stop are treated as a documented V1 limit instead of pretending a tiny correction can recover them
+- `reverse_test14.log` showed the complementary conservative failure mode: stopping short and deadlocking in final brake hold is also undesirable, so the conservative profile now needs a deliberate low-speed forward crawl for the last meters

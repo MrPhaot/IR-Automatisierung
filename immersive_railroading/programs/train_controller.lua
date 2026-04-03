@@ -72,6 +72,9 @@ local PROFILES = {
     required_stop_margin_m = 5.0,
     no_reverse_distance_m = 42.0,
     force_brake_distance_m = 24.0,
+    forward_crawl_speed_mps = 0.6,
+    forward_crawl_throttle_limit = 0.04,
+    forward_crawl_release_speed_mps = 0.2,
     approach_stop_target_speed_scale = 0.55,
     approach_stop_throttle_scale = 0.45,
     launch_throttle_scale = 0.75,
@@ -585,10 +588,23 @@ local function is_near_target_correction_candidate(distance_to_target_m, longitu
     and lateral_error_m <= DEFAULTS.near_target_correction_lateral_m
 end
 
+local function should_use_final_forward_crawl(profile, longitudinal_error_m, speed_toward_target_mps, stop_context)
+  return profile.name == "conservative"
+    and stop_context
+    and stop_context.in_no_reverse_approach
+    and not stop_context.must_stop_now
+    and longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
+    and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile)
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
+
+  if state.final_forward_crawl then
+    return "drive"
+  end
 
   if state.near_target_correction_active then
     if math.abs(speed_toward_target_mps) <= DEFAULTS.reverser_switch_speed_mps then
@@ -774,6 +790,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     halted_near_target_since = nil,
     near_target_correction_active = false,
     near_target_resolution = "idle",
+    final_forward_crawl = false,
   }
 
   ensure_ignition(remote)
@@ -869,6 +886,13 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if stop_context.in_no_reverse_approach then
       target_speed_mps = math.min(target_speed_mps, characteristics.cruise_mps * profile.approach_stop_target_speed_scale)
     end
+    if should_use_final_forward_crawl(profile, longitudinal_error_m, speed_toward_target_mps, stop_context) then
+      state.final_forward_crawl = true
+      state.brake_release_until = nil
+      target_speed_mps = math.min(target_speed_mps, profile.forward_crawl_speed_mps)
+    elseif state.final_forward_crawl and longitudinal_error_m <= DEFAULTS.arrival_longitudinal_m then
+      state.final_forward_crawl = false
+    end
     local suppress_reverse_recovery = should_suppress_reverse_recovery(
       raw_desired_reverser,
       state.active_reverser,
@@ -881,6 +905,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       state.near_target_correction_active = false
       state.stopped_after_overshoot = false
       state.near_target_resolution = "stop_first"
+      state.final_forward_crawl = false
     end
     if suppress_reverse_recovery then
       desired_reverser = state.active_reverser
@@ -893,6 +918,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       stop_context.must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
     end
     if state.stop_first_active then
+      state.final_forward_crawl = false
       desired_reverser = state.active_reverser
       speed_toward_target_mps = axis_speed_mps * desired_reverser
       target_speed_mps = math.min(target_speed_mps, DEFAULTS.arrival_speed_mps)
@@ -972,6 +998,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       state.halted_near_target_since = nil
       state.near_target_correction_active = false
       state.near_target_resolution = near_target_hold and "arrive" or "idle"
+      state.final_forward_crawl = false
       control = {
         throttle = 0,
         reverser = 0,
@@ -992,6 +1019,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       local brake = 0
 
       if state.near_target_resolution == "limit" then
+        state.final_forward_crawl = false
         state.mode = "hold"
         state.phase = "hold"
         state.reason = "near_target_limit"
@@ -1075,6 +1103,12 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
             state.reason = "no_reverse_approach"
           end
 
+          if state.final_forward_crawl then
+            target_speed_mps = math.min(target_speed_mps, profile.forward_crawl_speed_mps)
+            throttle_limit = math.min(throttle_limit, profile.forward_crawl_throttle_limit)
+            state.reason = "final_forward_crawl"
+          end
+
           if stop_context.must_stop_now then
             throttle_limit = 0
           end
@@ -1120,14 +1154,20 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
               )
             )
           elseif stop_context.in_no_reverse_approach then
-            state.reason = "final_brake_hold"
-            brake = math.max(
-              DEFAULTS.approach_stop_min_brake,
-              compute_brake_command(
-                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
-                DEFAULTS.approach_stop_min_brake
+            if should_use_final_forward_crawl(profile, longitudinal_error_m, speed_toward_target_mps, stop_context) then
+              state.final_forward_crawl = true
+              state.reason = "final_forward_crawl"
+              brake = 0
+            else
+              state.reason = "final_brake_hold"
+              brake = math.max(
+                DEFAULTS.approach_stop_min_brake,
+                compute_brake_command(
+                  math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
+                  DEFAULTS.approach_stop_min_brake
+                )
               )
-            )
+            end
           elseif switching_reverser then
             state.reason = "recovery_reverse"
             brake = math.max(
@@ -1202,7 +1242,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
         state.phase,
@@ -1219,6 +1259,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         required_stop_m,
         tostring(stop_context.in_approach_stop),
         tostring(stop_context.in_no_reverse_approach),
+        tostring(state.final_forward_crawl),
         tostring(state.stop_first_active),
         tostring(state.near_target_correction_active),
         state.near_target_resolution,
