@@ -9,7 +9,13 @@ V1 deliberately keeps scope narrow:
 
 The controller targets `component.ir_remote_control` and currently supports:
 - `inspect [--log[=path]]`
-- `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--profile=conservative|fast] [--log[=path]]`
+- `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--via <x> <y> <z> ...] [--profile=conservative|fast] [--log[=path]]`
+- `route <name> [--profile=conservative|fast] [--log[=path]]`
+
+Why the extra route layer exists:
+- the controller still does not infer rail topology from the world
+- `--via` and `route_book.lua` let you supply explicit curve geometry so before-curve runs do not collapse back onto one misleading straight target vector
+- `route_book.lua` ships empty on purpose because station coordinates are save-specific
 
 For OpenOS train control, prefer `trainctl ...`.
 Why: the built-in `lua` frontend parses `-` and `--` arguments before your script sees them, which breaks negative coordinates and flags such as `--log` and `--profile`.

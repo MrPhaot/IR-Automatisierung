@@ -30,7 +30,7 @@ local kd = kp * math.min(t_drive, t_brake)
 - An exponential moving average is used so one noisy sample does not permanently distort the stopping model.
 
 ## Why Stop Control Uses A Speed Envelope
-- The `goto` command only knows a point target in V1.
+- The terminal leg of `goto` or `route` still resolves to one point target in V1.
 - A remaining-distance speed cap based on `sqrt(2ad)` gives the controller a simple braking boundary that adapts as the learned brake model improves.
 - This is safer than trying to brake only when already near the target.
 - The default `conservative` profile intentionally scales that end-phase envelope down further so the train is more likely to stop without any reverse recovery on straight target runs.
@@ -51,14 +51,20 @@ local kd = kp * math.min(t_drive, t_brake)
 - Once the train produces a reliable velocity vector, the retained `target_line_axis` keeps the route frame stable while `motion_axis` is refreshed from filtered velocity only when alignment stays good.
 - This avoids the failure seen in `reverse_test1.log`, where a near-stop axis rotation turned almost the entire target error into lateral drift and made the controller think it had already arrived, without pretending the live motion hint itself is permanently frozen.
 
+## Why Curve Handling Uses Explicit Geometry
+
+- The controller still does not know the rail graph, junction state, or future curve tangent from the API alone.
+- V1 therefore handles curves by splitting a run into explicit legs from `--via` or `route_book.lua`.
+- Intermediate legs stay in pass-through tracking so the train keeps a route-aligned frame without trying to stop at each waypoint.
+- Only the final leg re-enters the full terminal arrival logic.
+
 ## Known Limits
 
-- Straight-line waypoint distance only
-- No route topology or signal awareness in V1
+- No automatic route topology or signal awareness in V1
 - Direction handling still assumes the train is roughly aligned for the intended move; route/junction logic belongs in later programs
 - The retained target-line axis is a robustness fix, not a substitute for real track topology on curves, junctions, or station approaches
-- V1 is currently intended for point targets that lie on an approximately straight approach from the current train position
-- Targets that sit on curves without explicit intermediate waypoints remain outside the stable V1 envelope, as seen in `reverse_test4.log`
+- Curve runs still require explicit intermediate waypoints or named routes; the controller does not discover them on its own
+- `route_book.lua` ships as a schema-only file because station coordinates are save-specific
 - `reverse_test7.log` and `reverse_test8.log` refined the straight-line endgame: immediate reverse recovery near the target is intentionally blocked until the train has actually stopped
 - `reverse_test10.log` and `reverse_test11.log` further show that micro-correction is only meant for small to moderate residual misses; larger misses after the stop are treated as a documented V1 limit instead of pretending a tiny correction can recover them
 - `reverse_test14.log` showed the complementary conservative failure mode: stopping short and deadlocking in final brake hold is also undesirable, so the conservative profile now needs a deliberate low-speed forward crawl for the last meters

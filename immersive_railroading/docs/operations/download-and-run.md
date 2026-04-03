@@ -34,7 +34,9 @@ Preferred OpenOS entrypoint:
 cd /home/immersive_railroading/programs
 trainctl inspect --log
 trainctl goto -120 64 -35 40 3 --log=test.log
+trainctl goto -120 64 -35 40 3 --via -80 64 -20 --via -45 64 -10 --log=test-curve.log
 trainctl goto -120 64 -35 40 3 --profile=fast --log=test-fast.log
+trainctl route depot_to_yard --log=route-test.log
 ```
 
 Fallback when you explicitly want to invoke the Lua frontend:
@@ -43,6 +45,8 @@ Fallback when you explicitly want to invoke the Lua frontend:
 cd /home/immersive_railroading/programs
 lua train_controller.lua -- inspect --log
 lua train_controller.lua -- goto -120 64 -35 40 3 --log=test.log
+lua train_controller.lua -- goto -120 64 -35 40 3 --via -80 64 -20 --log=test-curve.log
+lua train_controller.lua -- route depot_to_yard --log=route-test.log
 ```
 
 Why this matters:
@@ -50,8 +54,11 @@ Why this matters:
 - Without the separating `--`, negative coordinates like `-35` and flags like `--log` never reach `train_controller.lua`.
 - `trainctl` avoids that pre-processing and passes the arguments through unchanged.
 - If you omit `--profile`, `trainctl goto` defaults to `conservative`.
+- `trainctl route` uses the route defaults from `route_book.lua` unless you override the profile on the CLI.
 - `--profile` only changes the end-phase driving style; `cruise_kmh` and `stop_buffer_m` still keep their normal meaning.
 - `stop_buffer_m` still defines the stop point separately from the profile choice; it does not replace `--profile`.
+- Intermediate `--via` points are pass-through geometry only; only the final waypoint uses the terminal stop envelope.
+- `route_book.lua` ships as an empty schema, so `trainctl route <name>` only works after you add your own stations and routes for this save.
 
 ## Test-World Log Location
 

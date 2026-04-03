@@ -45,6 +45,9 @@ local PROFILES = controller.PROFILES
 local INFO_PATHS = controller.INFO_PATHS
 local HORSEPOWER_PATHS = controller.HORSEPOWER_PATHS
 local HORSEPOWER_TO_W = controller.HORSEPOWER_TO_W
+local parse_cli = controller.parse_cli
+local build_goto_route_plan = controller.build_goto_route_plan
+local build_named_route_plan = controller.build_named_route_plan
 
 local function get_profile(name)
   local profile = PROFILES[name or DEFAULTS.profile]
@@ -457,6 +460,45 @@ assert(parse_cli_profile({"goto", "1", "2", "3", "--profile", "conservative"}) =
 assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile"}) == false, "bare split profile flag should fail")
 assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile", "--log"}) == false, "split profile flag must reject another flag as its value")
 assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile="}) == false, "empty inline profile flag should fail")
+assert(pcall(parse_cli, {"goto", "1", "2", "3", "--via", "4", "5"}) == false, "truncated --via triplet should fail")
+
+do
+  local cli = parse_cli({"goto", "10", "64", "-20", "45", "2", "--via", "1", "2", "3", "--via", "4", "5", "6", "--profile=fast"})
+  assert(#cli.via_points == 2, "goto CLI should retain repeated --via triplets")
+  local route_plan = build_goto_route_plan(cli.argv, cli)
+  assert(route_plan.name == "inline", "goto route plan should use the inline route name")
+  assert(route_plan.profile_name == "fast", "goto route plan should honor the CLI profile")
+  assert(#route_plan.legs == 3, "goto route plan should turn vias plus final target into legs")
+  assert(route_plan.legs[1].mode == "pass_through", "intermediate goto waypoints should be pass-through legs")
+  assert(route_plan.legs[3].mode == "terminal", "final goto waypoint should stay terminal")
+end
+
+do
+  local route_book = {
+    STATIONS = {
+      depot = {x = 0, y = 64, z = 0},
+      yard_exit = {x = 120, y = 64, z = -35},
+    },
+    ROUTES = {
+      depot_to_yard = {
+        waypoints = {"depot", {x = 85, y = 64, z = -18}, "yard_exit"},
+        cruise_kmh = 40,
+        stop_buffer_m = 2,
+        profile = "conservative",
+      },
+      broken = {
+        waypoints = {"missing_station"},
+      },
+    },
+  }
+  local named_route = build_named_route_plan("depot_to_yard", {profile_name = "conservative", profile_explicit = false}, route_book)
+  assert(#named_route.legs == 3, "named routes should resolve mixed station ids and raw waypoint tables")
+  assert(named_route.legs[2].target.x == 85, "raw waypoint tables should stay usable in named routes")
+  local overridden_route = build_named_route_plan("depot_to_yard", {profile_name = "fast", profile_explicit = true}, route_book)
+  assert(overridden_route.profile_name == "fast", "CLI profile should override the route-book profile")
+  assert(pcall(build_named_route_plan, "missing", {profile_name = "conservative", profile_explicit = false}, route_book) == false, "unknown route ids should fail clearly")
+  assert(pcall(build_named_route_plan, "broken", {profile_name = "conservative", profile_explicit = false}, route_book) == false, "unknown station ids should fail clearly")
+end
 
 local lateral_regression_cap = target_speed_cap(
   math.sqrt(0.68 ^ 2 + 147.5 ^ 2),

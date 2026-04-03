@@ -1,2 +1,5 @@
--- TODO: Define named routes, stations, and waypoint chains for later dispatch layers.
--- Why this stays a skeleton in V1: the controller currently consumes only explicit XYZ targets.
+-- Route coordinates are world-specific, so V1 ships only the station-first schema.
+return {
+  STATIONS = {},
+  ROUTES = {},
+}
