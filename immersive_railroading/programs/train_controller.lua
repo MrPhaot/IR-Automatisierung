@@ -122,6 +122,43 @@ local function split_path(path)
   return ".", path
 end
 
+local function script_source_path()
+  local source = debug.getinfo(1, "S").source
+  if type(source) == "string" and source:sub(1, 1) == "@" then
+    return source:sub(2)
+  end
+  return "train_controller.lua"
+end
+
+local function script_directory()
+  local directory = split_path(script_source_path())
+  return directory or "."
+end
+
+local function is_absolute_path(path)
+  return type(path) == "string" and path:sub(1, 1) == "/"
+end
+
+local function join_paths(base, child)
+  if base == "." or base == "" then
+    return child
+  end
+  if base:sub(-1) == "/" then
+    return base .. child
+  end
+  return base .. "/" .. child
+end
+
+local function resolve_log_path(path)
+  if not path or path == "" then
+    return nil
+  end
+  if is_absolute_path(path) then
+    return path
+  end
+  return join_paths(script_directory(), path)
+end
+
 local function ensure_parent_directory(path)
   local fs = safe_require("filesystem")
   if not fs then
@@ -139,6 +176,7 @@ local function make_logger(path)
     return nil
   end
 
+  path = resolve_log_path(path)
   ensure_parent_directory(path)
   local handle, open_error = io.open(path, "a")
   if not handle then
@@ -337,9 +375,7 @@ local function read_position(remote)
     return vector_from_pos(x)
   end
 
-  -- Field testing indicates the remote-control tuple is exposed in a swapped
-  -- horizontal order in this environment, so we normalize it back to world XYZ.
-  return vector_from_pos({x = z, y = y, z = x})
+  return vector_from_pos({x = x, y = y, z = z})
 end
 
 local function extract_characteristics(info, consist, requested_cruise_kmh)
