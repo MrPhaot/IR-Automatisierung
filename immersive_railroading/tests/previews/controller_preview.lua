@@ -277,7 +277,11 @@ local function parse_cli_profile(argv)
         error("missing value for --profile (expected conservative or fast)")
       end
     elseif value:match("^%-%-profile=") then
-      profile_name = value:match("^%-%-profile=(.+)$")
+      local inline_profile_name = value:match("^%-%-profile=(.*)$")
+      if inline_profile_name == nil or inline_profile_name == "" then
+        error("missing value for --profile (expected conservative or fast)")
+      end
+      profile_name = inline_profile_name
       index = index + 1
     else
       index = index + 1
@@ -359,7 +363,14 @@ local function is_interrupt_reason(reason)
   return reason:match("interrupted") ~= nil or reason:match("terminated") ~= nil or reason == "terminate"
 end
 
-local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, must_stop_now)
+local function normalize_runtime_error(reason)
+  if type(reason) == "table" then
+    return reason.reason or reason.message or reason[1] or tostring(reason)
+  end
+  return reason
+end
+
+local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
   local profile = get_profile(state.profile_name)
   local overspeed = speed_toward_target_mps - target_speed_mps
   if state.final_forward_crawl then
@@ -373,7 +384,10 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
       return "brake"
     end
   end
-  if must_stop_now then
+  if stop_context and stop_context.must_stop_now then
+    return "brake"
+  end
+  if stop_context and stop_context.in_no_reverse_approach and not state.near_target_correction_active then
     return "brake"
   end
   if distance_to_target_m <= 1.5 * 4 and not state.near_target_correction_active then
@@ -389,6 +403,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     and not state.near_target_correction_active
     and overspeed >= -profile.brake_exit_margin_mps then
     return "brake"
+  end
+  if target_speed_mps <= 0.35 * 2 then
+    return "coast"
   end
   return "drive"
 end
@@ -424,6 +441,7 @@ assert(parse_cli_profile({"goto", "1", "2", "3", "--profile=fast"}) == "fast", "
 assert(parse_cli_profile({"goto", "1", "2", "3", "--profile", "conservative"}) == "conservative", "split profile flag should parse")
 assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile"}) == false, "bare split profile flag should fail")
 assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile", "--log"}) == false, "split profile flag must reject another flag as its value")
+assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile="}) == false, "empty inline profile flag should fail")
 
 local lateral_regression_cap = target_speed_cap(
   math.sqrt(0.68 ^ 2 + 147.5 ^ 2),
@@ -510,11 +528,11 @@ assert(
   "a log11-sized residual miss should be treated as a near-target limit, not as a micro-correction candidate"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = true, profile_name = "conservative"}, 0.02, 0.8, 7.24, false) == "drive",
+  select_motion_mode({mode = "brake", near_target_correction_active = true, profile_name = "conservative"}, 0.02, 0.8, 7.24, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
   "active near-target correction must be able to leave brake mode from a near-stop state"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "fast"}, 0.02, 0.8, 3.0, false) == "brake",
+  select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "fast"}, 0.02, 0.8, 3.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
   "without near-target correction the close-range brake bias should remain active"
 )
 assert(
@@ -527,7 +545,7 @@ assert(
     curve_guard_active = true,
     moving_away_confidence = 0.2,
     progress_speed_mps = -0.05,
-  }, -0.22, 8.0, 205.0, false) == "drive",
+  }, -0.22, 8.0, 205.0, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
   "curve guard should suppress stop-and-go when target projection briefly goes negative on a bend"
 )
 assert(
@@ -540,7 +558,7 @@ assert(
     curve_guard_active = false,
     moving_away_confidence = 0.0,
     progress_speed_mps = 0.0,
-  }, 0.0, 0.8, 50.0, false) == "drive",
+  }, 0.0, 0.8, 50.0, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
   "conservative profile should release brake sooner when overspeed drops below its tighter exit margin"
 )
 assert(
@@ -553,7 +571,7 @@ assert(
     curve_guard_active = false,
     moving_away_confidence = 0.0,
     progress_speed_mps = 0.0,
-  }, 0.0, 0.8, 50.0, false) == "brake",
+  }, 0.0, 0.8, 50.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
   "fast profile should keep braking longer because its exit margin is looser"
 )
 assert(
@@ -565,7 +583,7 @@ assert(
     curve_guard_active = false,
     moving_away_confidence = 0.8,
     progress_speed_mps = -2.0,
-  }, -0.22, 8.0, 205.0, false) == "brake",
+  }, -0.22, 8.0, 205.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
   "stable negative progress should still trigger moving-away braking"
 )
 assert(
@@ -577,7 +595,7 @@ assert(
     curve_guard_active = false,
     moving_away_confidence = 0.8,
     progress_speed_mps = -0.3,
-  }, -0.35, 8.0, 135.0, false) == "drive",
+  }, -0.35, 8.0, 135.0, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
   "startup guard should suppress early stop-and-go on shallow negative samples"
 )
 assert(
@@ -589,7 +607,7 @@ assert(
     curve_guard_active = false,
     moving_away_confidence = 0.98,
     progress_speed_mps = -2.5,
-  }, -2.8, 8.0, 135.0, false) == "brake",
+  }, -2.8, 8.0, 135.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
   "startup guard must still allow braking when the train is clearly moving away"
 )
 assert(
@@ -601,8 +619,34 @@ assert(
   "fast profile should not reuse the conservative final forward crawl path"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = false, final_forward_crawl = true}, 0.03, 0.6, 21.08, false) == "drive",
+  select_motion_mode({mode = "brake", near_target_correction_active = false, final_forward_crawl = true, profile_name = "conservative"}, 0.03, 0.6, 21.08, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
   "final forward crawl must be able to leave the conservative brake hold deadlock"
+)
+assert(
+  select_motion_mode({
+    mode = "drive",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    profile_name = "conservative",
+    startup_guard_active = false,
+    curve_guard_active = false,
+    moving_away_confidence = 0.0,
+    progress_speed_mps = 0.0,
+  }, 0.0, 0.6, 50.0, {must_stop_now = false, in_no_reverse_approach = false}) == "coast",
+  "low target speeds should fall through to coast instead of pretending a drive command is required"
+)
+assert(
+  select_motion_mode({
+    mode = "drive",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    profile_name = "fast",
+    startup_guard_active = false,
+    curve_guard_active = false,
+    moving_away_confidence = 0.0,
+    progress_speed_mps = 0.0,
+  }, 0.1, 4.0, 20.0, {must_stop_now = false, in_no_reverse_approach = true}) == "brake",
+  "preview should honor no-reverse approach braking from the stop context"
 )
 assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
 assert(
@@ -613,9 +657,9 @@ assert(
   is_off_target_line_failure(2.14, 0.72, 2.02, 0.0, 0.0, true) == false,
   "reverse-test21 style near stop should remain eligible for arrived_within_v1_limit"
 )
-assert(is_interrupt_reason("interrupted") == true, "plain interrupted should be recognized")
-assert(is_interrupt_reason("terminated") == true, "terminated should be recognized as an abort-like exit")
-assert(is_interrupt_reason({reason = "terminated"}) == false, "preview helper expects normalized reasons, not raw tables")
+assert(is_interrupt_reason(normalize_runtime_error("interrupted")) == true, "plain interrupted should be recognized")
+assert(is_interrupt_reason(normalize_runtime_error("terminated")) == true, "terminated should be recognized as an abort-like exit")
+assert(is_interrupt_reason(normalize_runtime_error({reason = "terminated"})) == true, "preview interrupt checks should use normalized runtime errors")
 
 local extracted = extract_characteristics(
   {

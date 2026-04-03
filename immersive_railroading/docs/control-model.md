@@ -37,17 +37,20 @@ local kd = kp * math.min(t_drive, t_brake)
 - That near-target resolution is intentionally split into phases: `stop_first` handles the stop itself, then a second decision chooses `near_target_arrival`, a limited `near_target_correction`, or a logged V1 limit if the residual miss is already too large for a tiny correction.
 
 ## Profile Modes
+
 - `conservative` is the default profile when no explicit flag is passed to `trainctl goto`.
 - `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and preferring a very slow final forward crawl over any reverse recovery when the train ends up stopping short.
 - `fast` keeps a looser end-phase envelope and allows more residual dynamics, so it stays closer to the old behavior and may still need fallback recovery more often.
 
 ## Why Distance And Motion Axis Are Now Separate
+
 - The real target is still a point in world space, so braking and arrival decisions use full point distance instead of only a projection onto the current motion frame.
 - The motion axis is kept only as a local track-direction hint for interpreting whether the train is moving toward or away from the target.
 - Once the train produces a reliable velocity vector, the retained `target_line_axis` keeps the route frame stable while `motion_axis` is refreshed from filtered velocity only when alignment stays good.
 - This avoids the failure seen in `reverse_test1.log`, where a near-stop axis rotation turned almost the entire target error into lateral drift and made the controller think it had already arrived, without pretending the live motion hint itself is permanently frozen.
 
 ## Known Limits
+
 - Straight-line waypoint distance only
 - No route topology or signal awareness in V1
 - Direction handling still assumes the train is roughly aligned for the intended move; route/junction logic belongs in later programs

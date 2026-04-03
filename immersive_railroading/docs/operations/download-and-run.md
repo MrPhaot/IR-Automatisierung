@@ -53,11 +53,11 @@ Why this matters:
 - `stop_buffer_m` still defines the stop point separately from the profile choice; it does not replace `--profile`.
 
 ## Test-World Log Location
-The current OpenComputers test machine writes logs under:
+The current OpenComputers test machine writes logs under a path shaped like:
 
-`~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/TEST (1)/opencomputers/6999b5c9-34da-42d3-9ab9-c02972b55cfc/home/immersive_railroading/programs/`
+`<launcher_root>/instances/<instance_name>/minecraft/saves/<world_name>/opencomputers/<computer_uuid>/home/immersive_railroading/programs/`
 
-Useful real examples from that directory:
+Useful real example logs found under that pattern:
 - `train_controller.log`
 - `reverse_test.log`
 - `reverse_test1.log`
@@ -72,7 +72,7 @@ Useful real examples from that directory:
 - `reverse_test15.log`
 - `reverse_test16.log`
 
-That path is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
+That directory pattern is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
 
 Current interpretation of those reference logs:
 - `reverse_test3.log` and `reverse_test5.log` are the main straight-line reference runs; they reach the target but were used to tune remaining overshoot in the last meters.
@@ -85,6 +85,13 @@ Current interpretation of those reference logs:
 - `reverse_test14.log` is the main conservative-profile under-target reference: it brakes early enough to avoid reverse, but then stops too far short and must transition into a very slow final forward crawl instead of deadlocking.
 - `reverse_test15.log` is the current good `fast`-profile straight-line reference with `stop_buffer_m=3`.
 - `reverse_test16.log` contains both `stop_buffer_m=1` profile runs, so it is the main side-by-side comparison for how `fast` and `conservative` diverge under a tighter stop point.
+
+## Dev Note
+The current local developer machine uses this exact path:
+
+`~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/TEST (1)/opencomputers/6999b5c9-34da-42d3-9ab9-c02972b55cfc/home/immersive_railroading/programs/`
+
+That exact path and file inventory are useful for local debugging, but the portable directory pattern above is the stable documentation target.
 
 ## Safety Notes
 - The installer rejects:

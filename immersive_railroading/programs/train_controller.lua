@@ -896,10 +896,11 @@ end
 local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m, profile_name, logger)
   local info, info_error = read_info(remote)
   if not info then
-    if is_interrupt_reason(info_error) then
-      return abort_run(remote, logger, normalize_runtime_error(info_error))
+    local normalized_info_error = normalize_runtime_error(info_error)
+    if is_interrupt_reason(normalized_info_error) then
+      return abort_run(remote, logger, normalized_info_error)
     end
-    return nil, "failed to read train info: " .. tostring(info_error)
+    return nil, "failed to read train info: " .. tostring(normalized_info_error)
   end
 
   local profile = get_profile(profile_name)
@@ -954,8 +955,9 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local now = uptime()
     local position, position_error = read_position(remote)
     if not position then
-      if is_interrupt_reason(position_error) then
-        return abort_run(remote, logger, normalize_runtime_error(position_error))
+      local normalized_position_error = normalize_runtime_error(position_error)
+      if is_interrupt_reason(normalized_position_error) then
+        return abort_run(remote, logger, normalized_position_error)
       end
       pcall(apply_controls, remote, {
         throttle = 0,
@@ -963,7 +965,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         brake = 1,
         independent_brake = 1,
       })
-      return nil, "failed to read train position: " .. tostring(position_error)
+      return nil, "failed to read train position: " .. tostring(normalized_position_error)
     end
 
     local dt_s = DEFAULTS.loop_dt_s
@@ -1199,7 +1201,23 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if terminal_limit_failure then
       state.terminal_failure_since = state.terminal_failure_since or now
       if now - state.terminal_failure_since >= DEFAULTS.terminal_stall_timeout_s then
-        pcall(apply_safe_stop, remote)
+        local stop_ok, stop_error = pcall(apply_safe_stop, remote)
+        if not stop_ok then
+          local normalized_stop_error = normalize_runtime_error(stop_error)
+          if is_interrupt_reason(normalized_stop_error) then
+            return abort_run(
+              remote,
+              logger,
+              normalized_stop_error,
+              distance_to_target_m,
+              longitudinal_error_m,
+              lateral_error_m,
+              speed_toward_target_mps,
+              axis_speed_mps
+            )
+          end
+          return nil, "failed to apply terminal safe stop: " .. tostring(normalized_stop_error)
+        end
         local terminal_reason = is_off_target_line_failure(
           distance_to_target_m,
           longitudinal_distance_m,
@@ -1244,7 +1262,23 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         independent_brake = DEFAULTS.hold_independent_brake,
       }
       if now - settled_since >= DEFAULTS.settle_time_s then
-        pcall(apply_controls, remote, control)
+        local hold_ok, hold_error = pcall(apply_controls, remote, control)
+        if not hold_ok then
+          local normalized_hold_error = normalize_runtime_error(hold_error)
+          if is_interrupt_reason(normalized_hold_error) then
+            return abort_run(
+              remote,
+              logger,
+              normalized_hold_error,
+              distance_to_target_m,
+              longitudinal_error_m,
+              lateral_error_m,
+              speed_toward_target_mps,
+              axis_speed_mps
+            )
+          end
+          return nil, "failed to apply arrival hold controls: " .. tostring(normalized_hold_error)
+        end
         local completion_reason = terminal_limit_hold and "arrived_within_v1_limit" or "arrived_at_target"
         emit_line(logger, ("%s learned_brake=%.3f m/s^2 samples=%d distance=%.2fm longitudinal=%.2fm lateral=%.2fm"):format(
           completion_reason,
@@ -1272,7 +1306,23 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           brake = DEFAULTS.hold_brake,
           independent_brake = DEFAULTS.hold_independent_brake,
         }
-        pcall(apply_controls, remote, control)
+        local hold_ok, hold_error = pcall(apply_controls, remote, control)
+        if not hold_ok then
+          local normalized_hold_error = normalize_runtime_error(hold_error)
+          if is_interrupt_reason(normalized_hold_error) then
+            return abort_run(
+              remote,
+              logger,
+              normalized_hold_error,
+              distance_to_target_m,
+              longitudinal_error_m,
+              lateral_error_m,
+              speed_toward_target_mps,
+              axis_speed_mps
+            )
+          end
+          return nil, "failed to apply near-target limit hold controls: " .. tostring(normalized_hold_error)
+        end
         emit_line(logger, ("near-target correction exceeds V1 envelope: distance=%.2fm longitudinal=%.2fm lateral=%.2fm stop_buffer=%.2fm"):format(
           distance_to_target_m,
           longitudinal_error_m,
@@ -1586,7 +1636,11 @@ local function parse_cli(argv)
         index = index + 1
       end
     elseif value:match("^%-%-log=") then
-      log_path = value:match("^%-%-log=(.+)$")
+      local inline_log_path = value:match("^%-%-log=(.*)$")
+      if inline_log_path == nil or inline_log_path == "" then
+        error("missing value for --log=path")
+      end
+      log_path = inline_log_path
       index = index + 1
     elseif value == "--profile" then
       local next_value = argv[index + 1]
@@ -1597,7 +1651,11 @@ local function parse_cli(argv)
         error("missing value for --profile (expected conservative or fast)")
       end
     elseif value:match("^%-%-profile=") then
-      profile_name = value:match("^%-%-profile=(.+)$")
+      local inline_profile_name = value:match("^%-%-profile=(.*)$")
+      if inline_profile_name == nil or inline_profile_name == "" then
+        error("missing value for --profile (expected conservative or fast)")
+      end
+      profile_name = inline_profile_name
       index = index + 1
     else
       positional[#positional + 1] = value
