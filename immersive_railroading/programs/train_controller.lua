@@ -39,6 +39,10 @@ local DEFAULTS = {
   move_away_brake_speed_mps = 0.15,
   restart_from_stop_speed_mps = 0.25,
   launch_throttle_limit = 0.22,
+  reverse_brake_min = 0.4,
+  reverse_brake_speed_scale_mps = 2.5,
+  axis_update_speed_mps = 0.75,
+  axis_lock_speed_mps = 0.5,
 }
 
 local INFO_PATHS = {
@@ -483,6 +487,17 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   return "drive"
 end
 
+local function compute_brake_command(overspeed, minimum)
+  local brake = clamp(overspeed / math.max(DEFAULTS.enter_brake_margin_mps, 0.05), 0, 1)
+  if overspeed >= DEFAULTS.overspeed_full_brake_margin_mps then
+    brake = 1
+  end
+  if brake > 0 and brake < minimum then
+    brake = minimum
+  end
+  return brake
+end
+
 local function print_table(title, value, indent, visited, logger)
   indent = indent or ""
   visited = visited or {}
@@ -598,6 +613,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
   }
   local state = {
     mode = "drive",
+    phase = "cruise",
+    reason = "speed_tracking",
     brake_release_until = nil,
     motion_axis = nil,
     active_reverser = 1,
@@ -632,7 +649,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     filtered_velocity.z = ema(filtered_velocity.z, velocity_vector.z, DEFAULTS.speed_filter_memory_s, dt_s)
     local filtered_speed_mps = vector_length(filtered_velocity)
 
-    if filtered_speed_mps >= DEFAULTS.min_axis_speed_mps then
+    if filtered_speed_mps >= DEFAULTS.axis_update_speed_mps and state.phase ~= "reverse_brake" then
       state.motion_axis = normalize(filtered_velocity) or state.motion_axis
     end
 
@@ -646,7 +663,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if remaining_m <= terminal_stop_zone_m then
       desired_reverser = state.active_reverser
     end
-    local speed_toward_target_mps = vector_dot(filtered_velocity, axis) * desired_reverser
+    local axis_speed_mps = vector_dot(filtered_velocity, axis)
+    local speed_toward_target_mps = axis_speed_mps * desired_reverser
 
     local pid = derive_pid(characteristics, brake_model)
     local target_speed_mps = stop_speed_cap(remaining_m, stop_buffer_m, brake_model, characteristics.cruise_mps)
@@ -654,6 +672,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       target_speed_mps = 0
     end
     local speed_error = target_speed_mps - speed_toward_target_mps
+    local overspeed = speed_toward_target_mps - target_speed_mps
+    local switching_reverser = desired_reverser ~= state.active_reverser
 
     local hold = remaining_m <= DEFAULTS.arrival_distance_m and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
     local control
@@ -661,6 +681,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if hold then
       settled_since = settled_since or now
       state.mode = "hold"
+      state.phase = "hold"
+      state.reason = "arrival_window"
       state.active_reverser = desired_reverser
       control = {
         throttle = 0,
@@ -678,20 +700,33 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       end
     else
       settled_since = nil
-      local switching_reverser = desired_reverser ~= state.active_reverser
-        and filtered_speed_mps > DEFAULTS.reverser_switch_speed_mps
-
-      if not switching_reverser then
-        state.active_reverser = desired_reverser
-      end
-
-      state.mode = switching_reverser
-        and "brake"
-        or select_motion_mode(state, speed_toward_target_mps, target_speed_mps, remaining_m)
       local throttle = 0
       local brake = 0
 
-      if state.mode == "drive" then
+      if switching_reverser and math.abs(axis_speed_mps) > DEFAULTS.reverser_switch_speed_mps then
+        state.mode = "brake"
+        state.phase = "reverse_brake"
+        state.reason = "reverser_mismatch"
+        integral = 0
+        brake = math.max(
+          DEFAULTS.reverse_brake_min,
+          clamp(math.abs(axis_speed_mps) / DEFAULTS.reverse_brake_speed_scale_mps, 0, 1)
+        )
+        state.brake_release_until = nil
+      else
+        if switching_reverser and math.abs(axis_speed_mps) <= DEFAULTS.reverser_switch_speed_mps then
+          state.active_reverser = desired_reverser
+          state.phase = "reverse_launch"
+          state.reason = "reverser_aligned"
+        else
+          state.phase = "tracking"
+          state.reason = "speed_tracking"
+        end
+
+        state.mode = select_motion_mode(state, speed_toward_target_mps, target_speed_mps, remaining_m)
+
+        if state.mode == "drive" then
+          state.reason = state.phase == "reverse_launch" and "restart_after_reverse" or "speed_tracking"
         integral = clamp(integral + speed_error * dt_s, -target_speed_mps * 2, target_speed_mps * 2)
         local derivative = (speed_error - previous_error) / dt_s
         local effort = pid.kp * speed_error + pid.ki * integral + pid.kd * derivative
@@ -699,39 +734,43 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           and DEFAULTS.approach_throttle_limit
           or DEFAULTS.cruise_throttle_limit
 
-        if math.abs(speed_toward_target_mps) <= DEFAULTS.restart_from_stop_speed_mps then
+          if math.abs(speed_toward_target_mps) <= DEFAULTS.restart_from_stop_speed_mps then
           throttle_limit = math.min(throttle_limit, DEFAULTS.launch_throttle_limit)
-        end
+          end
 
-        throttle = clamp(effort, 0, throttle_limit)
-        if throttle < DEFAULTS.throttle_deadband then
+          throttle = clamp(effort, 0, throttle_limit)
+          if throttle < DEFAULTS.throttle_deadband then
           throttle = 0
-        end
-      elseif state.mode == "brake" then
-        -- Resetting the drive integrator while braking avoids the controller
-        -- immediately snapping back to throttle after one slow sample.
-        integral = 0
-        local overspeed = speed_toward_target_mps - target_speed_mps
-        brake = clamp(overspeed / math.max(DEFAULTS.enter_brake_margin_mps, 0.05), 0, 1)
-        if switching_reverser then
-          brake = math.max(brake, 0.4)
-        end
-        if overspeed >= DEFAULTS.overspeed_full_brake_margin_mps then
-          brake = 1
-        end
-        if brake > 0 and brake < DEFAULTS.min_brake_command then
-          brake = DEFAULTS.min_brake_command
-        end
-        if brake < DEFAULTS.brake_deadband then
-          brake = 0
-          state.brake_release_until = now + DEFAULTS.brake_release_hold_s
+          end
+          if state.phase == "reverse_launch" and math.abs(axis_speed_mps) >= DEFAULTS.axis_lock_speed_mps then
+            state.phase = "tracking"
+          end
+        elseif state.mode == "brake" then
+          -- Resetting the drive integrator while braking avoids the controller
+          -- immediately snapping back to throttle after one slow sample.
+          integral = 0
+          if speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
+            state.reason = "moving_away_from_target"
+            brake = math.max(
+              DEFAULTS.min_brake_command,
+              clamp(math.abs(speed_toward_target_mps) / DEFAULTS.reverse_brake_speed_scale_mps, 0, 1)
+            )
+          else
+            state.reason = "overspeed"
+            brake = compute_brake_command(overspeed, DEFAULTS.min_brake_command)
+          end
+          if brake < DEFAULTS.brake_deadband then
+            brake = 0
+            state.brake_release_until = now + DEFAULTS.brake_release_hold_s
+          else
+            state.brake_release_until = nil
+          end
         else
-          state.brake_release_until = nil
+          state.reason = "low_target_speed"
+          integral = 0
+          throttle = 0
+          brake = 0
         end
-      else
-        integral = 0
-        throttle = 0
-        brake = 0
       end
 
       control = {
@@ -769,13 +808,19 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s longitudinal=%.2fm lateral=%.2fm speed=%.2fm/s cap=%.2fm/s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
+        state.phase,
+        state.reason,
         remaining_m,
         lateral_m,
         speed_toward_target_mps,
+        axis_speed_mps,
         target_speed_mps,
+        overspeed,
+        desired_reverser,
+        tostring(switching_reverser),
         state.active_reverser,
         control.throttle,
         control.brake,
