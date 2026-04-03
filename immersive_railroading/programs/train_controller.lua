@@ -925,6 +925,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     mode = "drive",
     phase = "cruise",
     reason = "speed_tracking",
+    started_at = uptime(),
     brake_release_until = nil,
     motion_axis = nil,
     target_line_axis = nil,
@@ -1031,7 +1032,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local axis_speed_mps = vector_dot(filtered_velocity, target_axis)
     local motion_axis_speed_mps = vector_dot(filtered_velocity, motion_axis)
     local speed_toward_target_mps = axis_speed_mps * desired_reverser
-    state.startup_guard_active = (now <= DEFAULTS.startup_guard_duration_s)
+    state.startup_guard_active = ((now - state.started_at) <= DEFAULTS.startup_guard_duration_s)
       and distance_to_target_m <= state.initial_distance_to_target_m + DEFAULTS.startup_guard_distance_margin_m
     state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment
       and state.progress_speed_mps >= DEFAULTS.curve_guard_progress_floor_mps
