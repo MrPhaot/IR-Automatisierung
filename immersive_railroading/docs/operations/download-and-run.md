@@ -50,6 +50,7 @@ Why this matters:
 - Without the separating `--`, negative coordinates like `-35` and flags like `--log` never reach `train_controller.lua`.
 - `trainctl` avoids that pre-processing and passes the arguments through unchanged.
 - If you omit `--profile`, `trainctl goto` defaults to `conservative`.
+- `--profile` only changes the end-phase driving style; `cruise_kmh` and `stop_buffer_m` still keep their normal meaning.
 - `stop_buffer_m` still defines the stop point separately from the profile choice; it does not replace `--profile`.
 
 ## Test-World Log Location
@@ -103,4 +104,5 @@ That exact path and file inventory are useful for local debugging, but the porta
 
 ## Offline Or Manual Fallback
 - Copy the `immersive_railroading/` folder into the OpenOS filesystem manually.
-- Run `lua programs/train_controller.lua inspect` to confirm the control card is visible.
+- Prefer `cd /home/immersive_railroading/programs && trainctl inspect` to confirm the control card is visible.
+- If you explicitly need the Lua frontend, use `cd /home/immersive_railroading/programs && lua train_controller.lua -- inspect`.

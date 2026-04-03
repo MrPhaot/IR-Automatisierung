@@ -2,7 +2,9 @@
 
 ## V1 Shape
 - Position source: `ir_remote_control.getPos()`
-- Train characteristic source: `ir_remote_control.info()` with `consist()` as a secondary fallback
+- Train characteristic sources: `ir_remote_control.info()` and `consist()`
+- Mass, traction, and power prefer consist-level totals when they are present, so the controller scales to the whole train instead of only the linked locomotive
+- Power prefers watt or kilowatt fields first, then falls back to `horsepower` converted to watts
 - Command surface: throttle, reverser, brake, independent brake, ignition
 
 ## Why The PID Baseline Is Physics-Derived

@@ -8,11 +8,11 @@ V1 deliberately keeps scope narrow:
 - agent-friendly docs that preserve observed runtime facts and known mismatches
 
 The controller targets `component.ir_remote_control` and currently supports:
-- `inspect`
-- `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m]`
+- `inspect [--log[=path]]`
+- `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--profile=conservative|fast] [--log[=path]]`
 
 For OpenOS train control, prefer `trainctl ...`.
-Why: the built-in `lua` frontend parses `-` and `--` arguments before your script sees them, which breaks negative coordinates and `--log`.
+Why: the built-in `lua` frontend parses `-` and `--` arguments before your script sees them, which breaks negative coordinates and flags such as `--log` and `--profile`.
 
 For OpenOS installation, prefer `lua programs/ir_install.lua`.
 Why: OpenOS already ships a different `install` command, so the project uses a distinct entrypoint to avoid collisions.

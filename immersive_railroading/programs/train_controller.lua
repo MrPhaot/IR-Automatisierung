@@ -527,14 +527,14 @@ local function extract_characteristics(info, consist, requested_cruise_kmh)
     or pick_number(info, INFO_PATHS.mass_kg)
     or DEFAULTS.fallback_mass_kg
 
-  local power_w = pick_number(info, INFO_PATHS.power_w)
-    or pick_number(consist, INFO_PATHS.power_w)
+  local power_w = pick_number(consist, INFO_PATHS.power_w)
+    or pick_number(info, INFO_PATHS.power_w)
   if power_w and power_w < 10000 then
     power_w = power_w * 1000
   end
   if not power_w then
-    local horsepower = pick_number(info, HORSEPOWER_PATHS)
-      or pick_number(consist, HORSEPOWER_PATHS)
+    local horsepower = pick_number(consist, HORSEPOWER_PATHS)
+      or pick_number(info, HORSEPOWER_PATHS)
     if horsepower then
       power_w = horsepower * HORSEPOWER_TO_W
     end
@@ -840,7 +840,26 @@ local function safe_stop_control(brake)
 end
 
 local function apply_safe_stop(remote, brake)
-  apply_controls(remote, safe_stop_control(brake))
+  local control = safe_stop_control(brake)
+  local failures = {}
+  local setters = {
+    {"setBrake", control.brake},
+    {"setIndependentBrake", control.independent_brake},
+    {"setThrottle", control.throttle},
+    {"setReverser", control.reverser},
+  }
+
+  for _, setter in ipairs(setters) do
+    local method_name, value = setter[1], setter[2]
+    local ok, err = pcall(remote[method_name], value)
+    if not ok then
+      failures[#failures + 1] = ("%s: %s"):format(method_name, normalize_runtime_error(err))
+    end
+  end
+
+  if #failures > 0 then
+    error("safe stop failed: " .. table.concat(failures, "; "))
+  end
 end
 
 local function abort_run(remote, logger, reason, distance_to_target_m, longitudinal_error_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps)
@@ -1123,7 +1142,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     end
     if suppress_reverse_recovery then
       desired_reverser = state.active_reverser
-      speed_toward_target_mps = axis_speed_mps * desired_reverser
+      speed_toward_target_mps = motion_axis_speed_mps * desired_reverser
       target_speed_mps = math.min(target_speed_mps, DEFAULTS.arrival_speed_mps)
       required_stop_m = required_stop_distance_m(math.max(speed_toward_target_mps, 0), stop_buffer_m, brake_model)
       stop_context.required_stop_m = required_stop_m
@@ -1134,7 +1153,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if state.stop_first_active then
       state.final_forward_crawl = false
       desired_reverser = state.active_reverser
-      speed_toward_target_mps = axis_speed_mps * desired_reverser
+      speed_toward_target_mps = motion_axis_speed_mps * desired_reverser
       target_speed_mps = math.min(target_speed_mps, DEFAULTS.arrival_speed_mps)
       stop_context.in_approach_stop = true
       stop_context.in_no_reverse_approach = true
@@ -1784,6 +1803,11 @@ end
 
 local exports = {
   main = main,
+  DEFAULTS = DEFAULTS,
+  PROFILES = PROFILES,
+  INFO_PATHS = INFO_PATHS,
+  HORSEPOWER_PATHS = HORSEPOWER_PATHS,
+  HORSEPOWER_TO_W = HORSEPOWER_TO_W,
 }
 
 if ... ~= "__module__" and can_auto_run() then

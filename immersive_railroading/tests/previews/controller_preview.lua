@@ -8,45 +8,46 @@ local function clamp(value, low, high)
   return value
 end
 
-local DEFAULTS = {
-  min_brake_mps2 = 0.2,
-}
+local function split_path(path)
+  local directory, name = path:match("^(.*)/([^/]+)$")
+  if directory then
+    return directory, name
+  end
+  return ".", path
+end
 
-local PROFILES = {
-  conservative = {
-    name = "conservative",
-    stop_cap_brake_scale = 0.6,
-    required_stop_margin_m = 5.0,
-    no_reverse_distance_m = 42.0,
-    force_brake_distance_m = 24.0,
-    forward_crawl_speed_mps = 0.6,
-    forward_crawl_throttle_limit = 0.04,
-    forward_crawl_release_speed_mps = 0.2,
-    approach_stop_target_speed_scale = 0.55,
-    approach_stop_throttle_scale = 0.45,
-    launch_throttle_scale = 0.75,
-    brake_exit_margin_mps = 0.2,
-    end_phase_integral_decay = 0.35,
-  },
-  fast = {
-    name = "fast",
-    stop_cap_brake_scale = 1.0,
-    required_stop_margin_m = 1.5,
-    no_reverse_distance_m = 22.0,
-    force_brake_distance_m = 10.0,
-    forward_crawl_speed_mps = 0.6,
-    forward_crawl_throttle_limit = 0.04,
-    forward_crawl_release_speed_mps = 0.2,
-    approach_stop_target_speed_scale = 0.9,
-    approach_stop_throttle_scale = 1.0,
-    launch_throttle_scale = 1.0,
-    brake_exit_margin_mps = 0.9,
-    end_phase_integral_decay = 0.85,
-  },
-}
+local function script_source_path()
+  local source = debug.getinfo(1, "S").source
+  if type(source) == "string" and source:sub(1, 1) == "@" then
+    return source:sub(2)
+  end
+  return "tests/previews/controller_preview.lua"
+end
+
+local function join_paths(base, child)
+  if base == "." or base == "" then
+    return child
+  end
+  if base:sub(-1) == "/" then
+    return base .. child
+  end
+  return base .. "/" .. child
+end
+
+local preview_directory = split_path(script_source_path())
+local controller_path = join_paths(preview_directory, "../../programs/train_controller.lua")
+local controller_chunk, controller_error = loadfile(controller_path)
+assert(controller_chunk, controller_error)
+
+local controller = controller_chunk("__module__")
+local DEFAULTS = controller.DEFAULTS
+local PROFILES = controller.PROFILES
+local INFO_PATHS = controller.INFO_PATHS
+local HORSEPOWER_PATHS = controller.HORSEPOWER_PATHS
+local HORSEPOWER_TO_W = controller.HORSEPOWER_TO_W
 
 local function get_profile(name)
-  local profile = PROFILES[name or "conservative"]
+  local profile = PROFILES[name or DEFAULTS.profile]
   if not profile then
     error("invalid profile")
   end
@@ -205,92 +206,37 @@ local function choose_axes(target_axis, filtered_velocity, capture_speed_mps, al
 end
 
 local function extract_characteristics(info, consist, requested_cruise_kmh)
-  local mass_paths = {
-    {"mass_kg"},
-    {"massKg"},
-    {"mass"},
-    {"weight_kg"},
-    {"weightKg"},
-    {"weight"},
-    {"physics", "mass_kg"},
-    {"physics", "mass"},
-    {"train", "mass_kg"},
-    {"train", "mass"},
-    {"consist", "mass_kg"},
-    {"consist", "mass"},
-  }
-  local traction_paths = {
-    {"total_traction_N"},
-    {"total_traction_n"},
-    {"traction_n"},
-    {"tractionN"},
-    {"traction"},
-    {"tractive_effort_n"},
-    {"tractiveEffortN"},
-    {"tractive_effort_kn"},
-    {"tractiveEffortKn"},
-    {"tractive_effort"},
-    {"specs", "traction_n"},
-    {"specs", "tractive_effort_n"},
-    {"engine", "tractive_effort_n"},
-  }
-  local power_paths = {
-    {"power_w"},
-    {"powerW"},
-    {"power_kw"},
-    {"powerKw"},
-    {"power"},
-    {"horsepower_w"},
-    {"specs", "power_w"},
-    {"specs", "power_kw"},
-    {"engine", "power_w"},
-    {"engine", "power_kw"},
-  }
-  local horsepower_paths = {
-    {"horsepower"},
-    {"engine", "horsepower"},
-    {"specs", "horsepower"},
-  }
-  local max_speed_paths = {
-    {"max_speed_kmh"},
-    {"maxSpeedKmh"},
-    {"max_speed"},
-    {"speed_limit_kmh"},
-    {"top_speed_kmh"},
-    {"specs", "max_speed_kmh"},
-  }
+  local mass_kg = pick_number(consist, INFO_PATHS.mass_kg)
+    or pick_number(info, INFO_PATHS.mass_kg)
+    or DEFAULTS.fallback_mass_kg
 
-  local mass_kg = pick_number(consist, mass_paths)
-    or pick_number(info, mass_paths)
-    or 425000
+  local traction_n = pick_number(consist, INFO_PATHS.traction_n)
+    or pick_number(info, INFO_PATHS.traction_n)
+    or DEFAULTS.fallback_traction_n
 
-  local traction_n = pick_number(consist, traction_paths)
-    or pick_number(info, traction_paths)
-    or 180000
-
-  local power_w = pick_number(info, power_paths)
-    or pick_number(consist, power_paths)
+  local power_w = pick_number(consist, INFO_PATHS.power_w)
+    or pick_number(info, INFO_PATHS.power_w)
   if power_w and power_w < 10000 then
     power_w = power_w * 1000
   end
   if not power_w then
-    local horsepower = pick_number(info, horsepower_paths)
-      or pick_number(consist, horsepower_paths)
+    local horsepower = pick_number(consist, HORSEPOWER_PATHS)
+      or pick_number(info, HORSEPOWER_PATHS)
     if horsepower then
-      power_w = horsepower * 745.7
+      power_w = horsepower * HORSEPOWER_TO_W
     end
   end
-  power_w = power_w or 1800000
+  power_w = power_w or DEFAULTS.fallback_power_w
 
-  local max_speed_kmh = pick_number(info, max_speed_paths)
-    or pick_number(consist, max_speed_paths)
-    or 65
+  local max_speed_kmh = pick_number(info, INFO_PATHS.max_speed_kmh)
+    or pick_number(consist, INFO_PATHS.max_speed_kmh)
+    or DEFAULTS.fallback_max_speed_kmh
 
   return {
     mass_kg = mass_kg,
     traction_n = traction_n,
     power_w = power_w,
-    cruise_kmh = clamp(requested_cruise_kmh or 40, 1, math.max(max_speed_kmh, 1)),
+    cruise_kmh = clamp(requested_cruise_kmh or DEFAULTS.cruise_kmh, 1, math.max(max_speed_kmh, 1)),
   }
 end
 
@@ -729,6 +675,10 @@ assert(is_interrupt_reason(normalize_runtime_error("interrupted")) == true, "pla
 assert(is_interrupt_reason(normalize_runtime_error("terminated")) == true, "terminated should be recognized as an abort-like exit")
 assert(is_interrupt_reason(normalize_runtime_error({reason = "terminated"})) == true, "preview interrupt checks should use normalized runtime errors")
 assert(is_interrupt_reason(normalize_runtime_error({code = "terminated"})) == true, "preview normalization should also recognize code-style interrupt objects")
+assert(PROFILES.conservative.stop_cap_brake_scale ~= nil, "imported conservative profile should include stop cap scaling")
+assert(PROFILES.fast.stop_cap_brake_scale ~= nil, "imported fast profile should include stop cap scaling")
+assert(PROFILES.fast.brake_exit_margin_mps ~= nil, "imported fast profile should include brake exit margin")
+assert(PROFILES.conservative.end_phase_integral_decay ~= nil, "imported conservative profile should include integral decay")
 
 local extracted = extract_characteristics(
   {
@@ -748,6 +698,19 @@ assert(math.abs(extracted.traction_n - 194161) < 0.001, "expected consist tracti
 assert(math.abs(extracted.power_w - 1900789.3) < 1, "expected horsepower conversion")
 assert(math.abs(extracted.cruise_kmh - 55) < 0.001, "expected requested cruise")
 
+local consist_first_power = extract_characteristics(
+  {
+    power_w = 800000,
+    horsepower = 1000,
+  },
+  {
+    power_w = 2200000,
+    horsepower = 3000,
+  },
+  40
+)
+assert(math.abs(consist_first_power.power_w - 2200000) < 0.001, "consist power should win over locomotive info power")
+
 print(("pid ok: kp=%.4f ki=%.4f kd=%.4f"):format(pid.kp, pid.ki, pid.kd))
 print(("brake learning ok: %.3f m/s^2"):format(learned))
 print(("stop profile ok: %.2f m/s at 25m, %.2f m/s at 400m"):format(stop_cap_short, stop_cap_long))
@@ -761,6 +724,7 @@ print("off-target line regression ok: large residual miss is not treated as a va
 print("curve guard regression ok: bends do not immediately trigger moving-away braking")
 print("startup guard regression ok: early shallow regressions do not trigger stop-and-go")
 print("interrupt regression ok: interrupted and terminated reasons are recognized")
+print("canonical import regression ok: preview uses production defaults, profiles, and lookup paths")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
   extracted.traction_n,
