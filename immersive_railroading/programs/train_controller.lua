@@ -36,6 +36,9 @@ local DEFAULTS = {
   reverser_switch_speed_mps = 0.4,
   log_default_path = "train_controller.log",
   terminal_stop_margin_m = 0.75,
+  move_away_brake_speed_mps = 0.15,
+  restart_from_stop_speed_mps = 0.25,
+  launch_throttle_limit = 0.22,
 }
 
 local INFO_PATHS = {
@@ -459,6 +462,12 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     return "brake"
   end
 
+  -- If the train is moving away from the target along the chosen track axis,
+  -- adding throttle only makes the oscillation worse. Force a stop first.
+  if speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
+    return "brake"
+  end
+
   if overspeed >= DEFAULTS.enter_brake_margin_mps then
     return "brake"
   end
@@ -689,6 +698,11 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         local throttle_limit = remaining_m <= DEFAULTS.approach_distance_m
           and DEFAULTS.approach_throttle_limit
           or DEFAULTS.cruise_throttle_limit
+
+        if math.abs(speed_toward_target_mps) <= DEFAULTS.restart_from_stop_speed_mps then
+          throttle_limit = math.min(throttle_limit, DEFAULTS.launch_throttle_limit)
+        end
+
         throttle = clamp(effort, 0, throttle_limit)
         if throttle < DEFAULTS.throttle_deadband then
           throttle = 0
@@ -755,8 +769,9 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "longitudinal=%.2fm lateral=%.2fm speed=%.2fm/s cap=%.2fm/s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s longitudinal=%.2fm lateral=%.2fm speed=%.2fm/s cap=%.2fm/s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
+        state.mode,
         remaining_m,
         lateral_m,
         speed_toward_target_mps,
