@@ -30,6 +30,10 @@ local DEFAULTS = {
   distance_progress_memory_s = 1.0,
   moving_away_memory_s = 1.2,
   moving_away_confidence_threshold = 0.55,
+  startup_guard_duration_s = 8.0,
+  startup_guard_distance_margin_m = 20.0,
+  startup_guard_brake_speed_mps = 2.5,
+  startup_guard_progress_floor_mps = -1.0,
   enter_brake_margin_mps = 0.35,
   exit_brake_margin_mps = 0.9,
   approach_distance_m = 120,
@@ -61,7 +65,7 @@ local DEFAULTS = {
   terminal_settle_time_s = 1.5,
   terminal_stall_timeout_s = 3.0,
   move_away_brake_speed_mps = 0.15,
-  curve_guard_alignment = 0.8,
+  curve_guard_alignment = 0.95,
   curve_guard_progress_floor_mps = -0.1,
   restart_from_stop_speed_mps = 0.25,
   launch_throttle_limit = 0.22,
@@ -318,17 +322,6 @@ local function is_interrupt_reason(reason)
 end
 
 local function sleep_for(seconds)
-  if type(os.sleep) == "function" then
-    local ok, result = pcall(os.sleep, seconds)
-    if not ok then
-      local reason = normalize_runtime_error(result)
-      if is_interrupt_reason(reason) then
-        return nil, reason
-      end
-      error(result)
-    end
-    return true
-  end
   if event and type(event.pull) == "function" then
     local ok, signal, a, b, c = pcall(event.pull, seconds)
     if not ok then
@@ -342,6 +335,17 @@ local function sleep_for(seconds)
       return nil, normalize_runtime_error(signal)
     end
     return true, signal, a, b, c
+  end
+  if type(os.sleep) == "function" then
+    local ok, result = pcall(os.sleep, seconds)
+    if not ok then
+      local reason = normalize_runtime_error(result)
+      if is_interrupt_reason(reason) then
+        return nil, reason
+      end
+      error(result)
+    end
+    return true
   end
 
   local deadline = uptime() + seconds
@@ -693,6 +697,14 @@ local function should_force_moving_away_brake(state, speed_toward_target_mps)
   if speed_toward_target_mps > -DEFAULTS.move_away_brake_speed_mps then
     return false
   end
+  if state.startup_guard_active then
+    if speed_toward_target_mps <= -DEFAULTS.startup_guard_brake_speed_mps then
+      return true
+    end
+    if state.moving_away_confidence < 0.95 or state.progress_speed_mps > DEFAULTS.startup_guard_progress_floor_mps then
+      return false
+    end
+  end
   if state.curve_guard_active and state.moving_away_confidence < DEFAULTS.moving_away_confidence_threshold then
     return false
   end
@@ -824,7 +836,7 @@ local function apply_safe_stop(remote)
 end
 
 local function abort_run(remote, logger, reason, distance_to_target_m, longitudinal_error_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps)
-  apply_safe_stop(remote)
+  pcall(apply_safe_stop, remote)
   emit_line(logger, ("aborted_by_user reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
     tostring(reason),
     distance_to_target_m or 0,
@@ -918,6 +930,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     target_line_axis = nil,
     axis_source = "target",
     axis_alignment = 1,
+    startup_guard_active = true,
     progress_speed_mps = 0,
     distance_delta_m = 0,
     moving_away_confidence = 0,
@@ -967,6 +980,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
 
     local to_target = vector_sub(target, position)
     local distance_to_target_m = vector_length(to_target)
+    state.initial_distance_to_target_m = state.initial_distance_to_target_m or distance_to_target_m
     local raw_progress_speed_mps = 0
     if previous_distance_to_target_m then
       raw_progress_speed_mps = (previous_distance_to_target_m - distance_to_target_m) / dt_s
@@ -1017,6 +1031,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local axis_speed_mps = vector_dot(filtered_velocity, target_axis)
     local motion_axis_speed_mps = vector_dot(filtered_velocity, motion_axis)
     local speed_toward_target_mps = axis_speed_mps * desired_reverser
+    state.startup_guard_active = (now <= DEFAULTS.startup_guard_duration_s)
+      and distance_to_target_m <= state.initial_distance_to_target_m + DEFAULTS.startup_guard_distance_margin_m
     state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment
       and state.progress_speed_mps >= DEFAULTS.curve_guard_progress_floor_mps
     local moving_away_sample = (speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps and state.progress_speed_mps < 0) and 1 or 0
@@ -1483,7 +1499,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f curve_guard_active=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
         state.phase,
@@ -1504,6 +1520,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         state.distance_delta_m,
         state.progress_speed_mps,
         state.moving_away_confidence,
+        tostring(state.startup_guard_active),
         tostring(state.curve_guard_active),
         required_stop_m,
         tostring(stop_context.in_approach_stop),

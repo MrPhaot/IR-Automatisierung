@@ -333,6 +333,14 @@ local function should_force_moving_away_brake(state, speed_toward_target_mps)
   if speed_toward_target_mps > -0.15 then
     return false
   end
+  if state.startup_guard_active then
+    if speed_toward_target_mps <= -2.5 then
+      return true
+    end
+    if state.moving_away_confidence < 0.95 or state.progress_speed_mps > -1.0 then
+      return false
+    end
+  end
   if state.curve_guard_active and state.moving_away_confidence < 0.55 then
     return false
   end
@@ -502,8 +510,10 @@ assert(
     mode = "drive",
     near_target_correction_active = false,
     final_forward_crawl = false,
+    startup_guard_active = false,
     curve_guard_active = true,
     moving_away_confidence = 0.2,
+    progress_speed_mps = -0.05,
   }, -0.22, 8.0, 205.0, false) == "drive",
   "curve guard should suppress stop-and-go when target projection briefly goes negative on a bend"
 )
@@ -512,10 +522,36 @@ assert(
     mode = "drive",
     near_target_correction_active = false,
     final_forward_crawl = false,
+    startup_guard_active = false,
     curve_guard_active = false,
     moving_away_confidence = 0.8,
+    progress_speed_mps = -2.0,
   }, -0.22, 8.0, 205.0, false) == "brake",
   "stable negative progress should still trigger moving-away braking"
+)
+assert(
+  select_motion_mode({
+    mode = "drive",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    startup_guard_active = true,
+    curve_guard_active = false,
+    moving_away_confidence = 0.8,
+    progress_speed_mps = -0.3,
+  }, -0.35, 8.0, 135.0, false) == "drive",
+  "startup guard should suppress early stop-and-go on shallow negative samples"
+)
+assert(
+  select_motion_mode({
+    mode = "drive",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    startup_guard_active = true,
+    curve_guard_active = false,
+    moving_away_confidence = 0.98,
+    progress_speed_mps = -2.5,
+  }, -2.8, 8.0, 135.0, false) == "brake",
+  "startup guard must still allow braking when the train is clearly moving away"
 )
 assert(
   should_use_final_forward_crawl("conservative", 9.74, 0.03, true, false) == true,
@@ -571,6 +607,7 @@ print("overshoot recovery regression ok: small overshoot keeps braking before re
 print("terminal brake hold regression ok: approach stop does not release the brake too early")
 print("off-target line regression ok: large residual miss is not treated as a valid terminal arrival")
 print("curve guard regression ok: bends do not immediately trigger moving-away braking")
+print("startup guard regression ok: early shallow regressions do not trigger stop-and-go")
 print("interrupt regression ok: interrupted and terminated reasons are recognized")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
