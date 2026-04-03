@@ -8,22 +8,40 @@ local function clamp(value, low, high)
   return value
 end
 
+local DEFAULTS = {
+  min_brake_mps2 = 0.2,
+}
+
 local PROFILES = {
   conservative = {
     name = "conservative",
     stop_cap_brake_scale = 0.6,
     required_stop_margin_m = 5.0,
     no_reverse_distance_m = 42.0,
+    force_brake_distance_m = 24.0,
     forward_crawl_speed_mps = 0.6,
+    forward_crawl_throttle_limit = 0.04,
     forward_crawl_release_speed_mps = 0.2,
+    approach_stop_target_speed_scale = 0.55,
+    approach_stop_throttle_scale = 0.45,
+    launch_throttle_scale = 0.75,
     brake_exit_margin_mps = 0.2,
+    end_phase_integral_decay = 0.35,
   },
   fast = {
     name = "fast",
     stop_cap_brake_scale = 1.0,
     required_stop_margin_m = 1.5,
     no_reverse_distance_m = 22.0,
+    force_brake_distance_m = 10.0,
+    forward_crawl_speed_mps = 0.6,
+    forward_crawl_throttle_limit = 0.04,
+    forward_crawl_release_speed_mps = 0.2,
+    approach_stop_target_speed_scale = 0.9,
+    approach_stop_throttle_scale = 1.0,
+    launch_throttle_scale = 1.0,
     brake_exit_margin_mps = 0.9,
+    end_phase_integral_decay = 0.85,
   },
 }
 
@@ -101,7 +119,9 @@ end
 
 local function profiled_stop_speed_cap(remaining_m, stop_buffer_m, brake_mps2, cruise_kmh, profile_name)
   local profile = get_profile(profile_name)
-  local effective_brake_mps2 = math.max(brake_mps2 * profile.stop_cap_brake_scale, 0.2)
+  local effective_brake_mps2 = math.max(brake_mps2, DEFAULTS.min_brake_mps2)
+  effective_brake_mps2 = effective_brake_mps2 * profile.stop_cap_brake_scale
+  effective_brake_mps2 = math.max(effective_brake_mps2, DEFAULTS.min_brake_mps2)
   return stop_speed_cap(remaining_m, stop_buffer_m, effective_brake_mps2, cruise_kmh)
 end
 
@@ -186,24 +206,58 @@ end
 
 local function extract_characteristics(info, consist, requested_cruise_kmh)
   local mass_paths = {
-    {"weight_kg"},
     {"mass_kg"},
+    {"massKg"},
+    {"mass"},
+    {"weight_kg"},
+    {"weightKg"},
     {"weight"},
+    {"physics", "mass_kg"},
+    {"physics", "mass"},
+    {"train", "mass_kg"},
+    {"train", "mass"},
+    {"consist", "mass_kg"},
+    {"consist", "mass"},
   }
   local traction_paths = {
     {"total_traction_N"},
+    {"total_traction_n"},
+    {"traction_n"},
+    {"tractionN"},
     {"traction"},
+    {"tractive_effort_n"},
+    {"tractiveEffortN"},
+    {"tractive_effort_kn"},
+    {"tractiveEffortKn"},
+    {"tractive_effort"},
+    {"specs", "traction_n"},
+    {"specs", "tractive_effort_n"},
+    {"engine", "tractive_effort_n"},
   }
   local power_paths = {
     {"power_w"},
+    {"powerW"},
     {"power_kw"},
+    {"powerKw"},
+    {"power"},
+    {"horsepower_w"},
+    {"specs", "power_w"},
+    {"specs", "power_kw"},
+    {"engine", "power_w"},
+    {"engine", "power_kw"},
   }
   local horsepower_paths = {
     {"horsepower"},
+    {"engine", "horsepower"},
+    {"specs", "horsepower"},
   }
   local max_speed_paths = {
-    {"max_speed"},
     {"max_speed_kmh"},
+    {"maxSpeedKmh"},
+    {"max_speed"},
+    {"speed_limit_kmh"},
+    {"top_speed_kmh"},
+    {"specs", "max_speed_kmh"},
   }
 
   local mass_kg = pick_number(consist, mass_paths)
@@ -252,7 +306,7 @@ local function required_stop_distance_m(speed_mps, stop_buffer_m, brake_mps2)
   return stop_buffer_m + (speed_mps * speed_mps) / (2 * conservative_brake)
 end
 
-local function must_stop_now(distance_to_target_m, speed_toward_target_mps, stop_buffer_m, brake_mps2)
+local function must_stop_now_fn(distance_to_target_m, speed_toward_target_mps, stop_buffer_m, brake_mps2)
   local required_stop_m = required_stop_distance_m(speed_toward_target_mps, stop_buffer_m, brake_mps2)
   return speed_toward_target_mps > 0.35 and required_stop_m + 1.5 >= distance_to_target_m
 end
@@ -322,11 +376,11 @@ local function should_release_near_target_correction(stop_first_active, stopped_
     and not is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
 end
 
-local function should_use_final_forward_crawl(profile_name, longitudinal_error_m, speed_toward_target_mps, in_no_reverse_approach, must_stop_now)
+local function should_use_final_forward_crawl(profile_name, longitudinal_error_m, speed_toward_target_mps, in_no_reverse_approach, stop_now_flag)
   local profile = get_profile(profile_name)
   return profile.name == "conservative"
     and in_no_reverse_approach
-    and not must_stop_now
+    and not stop_now_flag
     and longitudinal_error_m > 1.5
     and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
 end
@@ -378,9 +432,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   local profile = get_profile(state.profile_name)
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
-  local must_stop_now = stop_context and stop_context.must_stop_now
+  local stop_now_flag = stop_context and stop_context.must_stop_now
 
-  if state.final_forward_crawl and not must_stop_now then
+  if state.final_forward_crawl and not stop_now_flag then
     return "drive"
   end
   if state.near_target_correction_active then
@@ -394,7 +448,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   if must_hold_brake then
     return "brake"
   end
-  if must_stop_now then
+  if stop_now_flag then
     return "brake"
   end
   if stop_context and stop_context.in_no_reverse_approach and not state.near_target_correction_active then
@@ -495,7 +549,7 @@ do
   assert(alignment > 0.99, "aligned motion should report strong target alignment")
 end
 assert(
-  must_stop_now(3.47, 4.31, 3, 0.889) == true,
+  must_stop_now_fn(3.47, 4.31, 3, 0.889) == true,
   "small remaining distance with high residual speed must force braking"
 )
 assert(
