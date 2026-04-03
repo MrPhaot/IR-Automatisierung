@@ -431,6 +431,26 @@ local function normalize(vector)
   return vector_scale(vector, 1 / length)
 end
 
+local function blend_axes(base_axis, candidate_axis, candidate_weight)
+  if not candidate_axis then
+    return base_axis
+  end
+  if not base_axis then
+    return candidate_axis
+  end
+
+  local aligned_candidate = candidate_axis
+  if vector_dot(base_axis, candidate_axis) < 0 then
+    aligned_candidate = vector_scale(candidate_axis, -1)
+  end
+
+  return normalize({
+    x = base_axis.x * (1 - candidate_weight) + aligned_candidate.x * candidate_weight,
+    y = base_axis.y * (1 - candidate_weight) + aligned_candidate.y * candidate_weight,
+    z = base_axis.z * (1 - candidate_weight) + aligned_candidate.z * candidate_weight,
+  }) or base_axis
+end
+
 local function vector_reject(vector, axis)
   return vector_sub(vector, vector_scale(axis, vector_dot(vector, axis)))
 end
@@ -640,6 +660,16 @@ local function should_fail_terminal_limit(distance_to_target_m, longitudinal_dis
     )
 end
 
+local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context)
+  return stop_context
+    and stop_context.in_no_reverse_approach
+    and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
+    and math.abs(axis_speed_mps) <= DEFAULTS.arrival_speed_mps
+    and distance_to_target_m > DEFAULTS.near_target_arrival_distance_m
+    and lateral_error_m > DEFAULTS.near_target_arrival_lateral_m
+    and longitudinal_distance_m > DEFAULTS.near_target_arrival_longitudinal_m
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile)
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
@@ -839,7 +869,9 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     reason = "speed_tracking",
     brake_release_until = nil,
     motion_axis = nil,
-    axis_frozen = false,
+    target_line_axis = nil,
+    axis_source = "target",
+    axis_alignment = 1,
     active_reverser = 1,
     stop_first_active = false,
     stopped_after_overshoot = false,
@@ -884,36 +916,42 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local distance_to_target_m = vector_length(to_target)
     local terminal_stop_zone_m = math.max(stop_buffer_m, DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m)
 
-    local target_axis = normalize(to_target) or state.motion_axis or {x = 1, y = 0, z = 0}
-    if not state.axis_frozen then
-      -- Before we trust measured motion, keep the frame anchored to the target
-      -- itself so startup jitter cannot redefine "forward" sideways.
-      state.motion_axis = target_axis
-    end
-    if not state.axis_frozen
-      and filtered_speed_mps >= DEFAULTS.axis_capture_speed_mps
-      and state.phase ~= "reverse_brake"
-      and distance_to_target_m > terminal_stop_zone_m then
-      local velocity_axis = normalize(filtered_velocity)
-      local capture_alignment = velocity_axis and abs_dot(velocity_axis, target_axis) or 0
-      -- Freezing the first reliable movement axis avoids the near-stop frame
-      -- rotating ninety degrees and falsely collapsing the target projection.
-      if velocity_axis and capture_alignment >= DEFAULTS.axis_capture_alignment_min then
-        state.motion_axis = velocity_axis
-        state.axis_frozen = true
-      end
+    if not state.target_line_axis then
+      state.target_line_axis = normalize(to_target) or {x = 1, y = 0, z = 0}
     end
 
-    local axis = state.motion_axis
-    local longitudinal_error_m = vector_dot(to_target, axis)
-    local lateral_error_m = vector_length(vector_reject(to_target, axis))
+    local fresh_target_axis = normalize(to_target)
+    if fresh_target_axis and distance_to_target_m > terminal_stop_zone_m then
+      -- The target line stays anchored to the route geometry so startup drift
+      -- cannot permanently redefine where "forward to the point" lies.
+      state.target_line_axis = blend_axes(state.target_line_axis, fresh_target_axis, 0.1)
+    end
+
+    local target_axis = state.target_line_axis
+    local velocity_axis = filtered_speed_mps >= DEFAULTS.axis_capture_speed_mps and normalize(filtered_velocity) or nil
+    local capture_alignment = velocity_axis and abs_dot(velocity_axis, target_axis) or 0
+    state.axis_alignment = capture_alignment
+
+    if velocity_axis and state.phase ~= "reverse_brake" and distance_to_target_m > terminal_stop_zone_m
+      and capture_alignment >= DEFAULTS.axis_capture_alignment_min then
+      state.motion_axis = blend_axes(target_axis, velocity_axis, 0.25)
+      state.axis_source = "blended"
+    else
+      state.motion_axis = target_axis
+      state.axis_source = "target"
+    end
+
+    local motion_axis = state.motion_axis
+    local longitudinal_error_m = vector_dot(to_target, target_axis)
+    local lateral_error_m = vector_length(vector_reject(to_target, target_axis))
     local longitudinal_distance_m = math.abs(longitudinal_error_m)
     local raw_desired_reverser = longitudinal_error_m >= 0 and 1 or -1
     local desired_reverser = raw_desired_reverser
     if distance_to_target_m <= terminal_stop_zone_m then
       desired_reverser = state.active_reverser
     end
-    local axis_speed_mps = vector_dot(filtered_velocity, axis)
+    local axis_speed_mps = vector_dot(filtered_velocity, target_axis)
+    local motion_axis_speed_mps = vector_dot(filtered_velocity, motion_axis)
     local speed_toward_target_mps = axis_speed_mps * desired_reverser
 
     local pid = derive_pid(characteristics, brake_model)
@@ -1071,7 +1109,16 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       state.terminal_failure_since = state.terminal_failure_since or now
       if now - state.terminal_failure_since >= DEFAULTS.terminal_stall_timeout_s then
         apply_safe_stop(remote)
-        emit_line(logger, ("terminal_limit_exit reason=stalled_outside_v1_limit distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
+        local terminal_reason = is_off_target_line_failure(
+          distance_to_target_m,
+          longitudinal_distance_m,
+          lateral_error_m,
+          speed_toward_target_mps,
+          axis_speed_mps,
+          stop_context
+        ) and "stalled_off_target_line" or "stalled_outside_v1_limit"
+        emit_line(logger, ("terminal_limit_exit reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
+          terminal_reason,
           distance_to_target_m,
           longitudinal_error_m,
           lateral_error_m,
@@ -1347,7 +1394,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
         state.phase,
@@ -1357,10 +1404,14 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         distance_to_target_m,
         longitudinal_error_m,
         lateral_error_m,
-        axis.x,
-        axis.y,
-        axis.z,
-        tostring(state.axis_frozen),
+        target_axis.x,
+        target_axis.y,
+        target_axis.z,
+        motion_axis.x,
+        motion_axis.y,
+        motion_axis.z,
+        state.axis_source,
+        state.axis_alignment,
         required_stop_m,
         tostring(stop_context.in_approach_stop),
         tostring(stop_context.in_no_reverse_approach),
@@ -1370,6 +1421,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         state.near_target_resolution,
         speed_toward_target_mps,
         axis_speed_mps,
+        motion_axis_speed_mps,
         target_speed_mps,
         overspeed,
         desired_reverser,

@@ -125,6 +125,26 @@ local function normalize(vector)
   }
 end
 
+local function dot(a, b)
+  return a.x * b.x + a.y * b.y + a.z * b.z
+end
+
+local function blend_axes(base_axis, candidate_axis, candidate_weight)
+  local aligned_candidate = candidate_axis
+  if dot(base_axis, candidate_axis) < 0 then
+    aligned_candidate = {
+      x = -candidate_axis.x,
+      y = -candidate_axis.y,
+      z = -candidate_axis.z,
+    }
+  end
+  return normalize({
+    x = base_axis.x * (1 - candidate_weight) + aligned_candidate.x * candidate_weight,
+    y = base_axis.y * (1 - candidate_weight) + aligned_candidate.y * candidate_weight,
+    z = base_axis.z * (1 - candidate_weight) + aligned_candidate.z * candidate_weight,
+  })
+end
+
 local function abs_dot(a, b)
   return math.abs(a.x * b.x + a.y * b.y + a.z * b.z)
 end
@@ -146,6 +166,20 @@ local function should_capture_axis(to_target, filtered_velocity, capture_speed_m
   end
 
   return abs_dot(target_axis, velocity_axis) >= alignment_min
+end
+
+local function choose_axes(target_axis, filtered_velocity, capture_speed_mps, alignment_min)
+  local speed = math.sqrt(
+    filtered_velocity.x * filtered_velocity.x +
+    filtered_velocity.y * filtered_velocity.y +
+    filtered_velocity.z * filtered_velocity.z
+  )
+  local velocity_axis = speed >= capture_speed_mps and normalize(filtered_velocity) or nil
+  local alignment = velocity_axis and abs_dot(target_axis, velocity_axis) or 0
+  if velocity_axis and alignment >= alignment_min then
+    return blend_axes(target_axis, velocity_axis, 0.25), "blended", alignment
+  end
+  return target_axis, "target", alignment
 end
 
 local function extract_characteristics(info, consist, requested_cruise_kmh)
@@ -286,6 +320,15 @@ local function should_use_final_forward_crawl(profile_name, longitudinal_error_m
     and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
 end
 
+local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, in_no_reverse_approach)
+  return in_no_reverse_approach
+    and math.abs(speed_toward_target_mps) <= 0.35
+    and math.abs(axis_speed_mps) <= 0.35
+    and distance_to_target_m > 3.75
+    and lateral_error_m > 3.0
+    and longitudinal_distance_m > 2.5
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, must_stop_now)
   local overspeed = speed_toward_target_mps - target_speed_mps
   if state.final_forward_crawl then
@@ -361,6 +404,30 @@ assert(
   ) == false,
   "sideways startup jitter should not freeze the axis"
 )
+do
+  local target_axis = normalize({x = -0.28, y = 0, z = -147.5})
+  local motion_axis, axis_source, alignment = choose_axes(
+    target_axis,
+    {x = 1.32, y = 0, z = 0},
+    0.75,
+    0.75
+  )
+  assert(axis_source == "target", "misaligned startup motion should not replace the target line axis")
+  assert(abs_dot(motion_axis, target_axis) > 0.999, "target line axis should remain primary under sideways jitter")
+  assert(alignment < 0.75, "sideways jitter alignment should stay below the capture threshold")
+end
+do
+  local target_axis = normalize({x = 0, y = 0, z = -100})
+  local motion_axis, axis_source, alignment = choose_axes(
+    target_axis,
+    {x = 0.2, y = 0, z = -8.0},
+    0.75,
+    0.75
+  )
+  assert(axis_source == "blended", "well-aligned motion should only blend into the target line, not replace it")
+  assert(abs_dot(motion_axis, target_axis) > 0.99, "blended axis should stay close to the target line")
+  assert(alignment > 0.99, "aligned motion should report strong target alignment")
+end
 assert(
   must_stop_now(3.47, 4.31, 3, 0.889) == true,
   "small remaining distance with high residual speed must force braking"
@@ -425,6 +492,14 @@ assert(
   "final forward crawl must be able to leave the conservative brake hold deadlock"
 )
 assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
+assert(
+  is_off_target_line_failure(28.73, 25.56, 13.11, 0.0, 0.0, true) == true,
+  "abort-test style terminal stop on the wrong line should be classified as off-target-line failure"
+)
+assert(
+  is_off_target_line_failure(2.14, 0.72, 2.02, 0.0, 0.0, true) == false,
+  "reverse-test21 style near stop should remain eligible for arrived_within_v1_limit"
+)
 
 local extracted = extract_characteristics(
   {
@@ -449,9 +524,11 @@ print(("brake learning ok: %.3f m/s^2"):format(learned))
 print(("stop profile ok: %.2f m/s at 25m, %.2f m/s at 400m"):format(stop_cap_short, stop_cap_long))
 print(("lateral frame regression ok: %.2f m/s cap stays above zero"):format(lateral_regression_cap))
 print("axis capture regression ok: sideways startup jitter rejected")
+print("target line axis regression ok: target geometry stays primary over early motion samples")
 print("approach stop regression ok: late braking is forced near the target")
 print("overshoot recovery regression ok: small overshoot keeps braking before reverse recovery")
 print("terminal brake hold regression ok: approach stop does not release the brake too early")
+print("off-target line regression ok: large residual miss is not treated as a valid terminal arrival")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
   extracted.traction_n,
