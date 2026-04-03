@@ -82,6 +82,41 @@ local function target_speed_cap(distance_to_target_m, lateral_error_m, stop_buff
   return math.min(cap, cruise_mps)
 end
 
+local function normalize(vector)
+  local length = math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+  if length <= 0 then
+    return nil
+  end
+  return {
+    x = vector.x / length,
+    y = vector.y / length,
+    z = vector.z / length,
+  }
+end
+
+local function abs_dot(a, b)
+  return math.abs(a.x * b.x + a.y * b.y + a.z * b.z)
+end
+
+local function should_capture_axis(to_target, filtered_velocity, capture_speed_mps, alignment_min)
+  local speed = math.sqrt(
+    filtered_velocity.x * filtered_velocity.x +
+    filtered_velocity.y * filtered_velocity.y +
+    filtered_velocity.z * filtered_velocity.z
+  )
+  if speed < capture_speed_mps then
+    return false
+  end
+
+  local target_axis = normalize(to_target)
+  local velocity_axis = normalize(filtered_velocity)
+  if not target_axis or not velocity_axis then
+    return false
+  end
+
+  return abs_dot(target_axis, velocity_axis) >= alignment_min
+end
+
 local function extract_characteristics(info, consist, requested_cruise_kmh)
   local mass_paths = {
     {"weight_kg"},
@@ -159,6 +194,15 @@ local lateral_regression_cap = target_speed_cap(
   55
 )
 assert(math.abs(lateral_regression_cap - (55 / 3.6)) < 0.05, "lateral frame regression collapsed cap")
+assert(
+  should_capture_axis(
+    {x = -0.28, y = 0, z = -147.5},
+    {x = 1.32, y = 0, z = 0},
+    0.75,
+    0.75
+  ) == false,
+  "sideways startup jitter should not freeze the axis"
+)
 
 local extracted = extract_characteristics(
   {
@@ -182,6 +226,7 @@ print(("pid ok: kp=%.4f ki=%.4f kd=%.4f"):format(pid.kp, pid.ki, pid.kd))
 print(("brake learning ok: %.3f m/s^2"):format(learned))
 print(("stop profile ok: %.2f m/s at 25m, %.2f m/s at 400m"):format(stop_cap_short, stop_cap_long))
 print(("lateral frame regression ok: %.2f m/s cap stays above zero"):format(lateral_regression_cap))
+print("axis capture regression ok: sideways startup jitter rejected")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
   extracted.traction_n,

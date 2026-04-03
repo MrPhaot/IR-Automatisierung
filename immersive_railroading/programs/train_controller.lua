@@ -44,6 +44,7 @@ local DEFAULTS = {
   reverse_brake_min = 0.4,
   reverse_brake_speed_scale_mps = 2.5,
   axis_capture_speed_mps = 0.75,
+  axis_capture_alignment_min = 0.75,
   axis_lock_speed_mps = 0.5,
 }
 
@@ -361,6 +362,10 @@ local function vector_reject(vector, axis)
   return vector_sub(vector, vector_scale(axis, vector_dot(vector, axis)))
 end
 
+local function abs_dot(a, b)
+  return math.abs(vector_dot(a, b))
+end
+
 local function ema(previous, sample, memory_s, dt_s)
   if previous == nil then
     return sample
@@ -676,17 +681,24 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local distance_to_target_m = vector_length(to_target)
     local terminal_stop_zone_m = math.max(stop_buffer_m, DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m)
 
-    if not state.motion_axis then
-      state.motion_axis = normalize(to_target) or {x = 1, y = 0, z = 0}
+    local target_axis = normalize(to_target) or state.motion_axis or {x = 1, y = 0, z = 0}
+    if not state.axis_frozen then
+      -- Before we trust measured motion, keep the frame anchored to the target
+      -- itself so startup jitter cannot redefine "forward" sideways.
+      state.motion_axis = target_axis
     end
     if not state.axis_frozen
       and filtered_speed_mps >= DEFAULTS.axis_capture_speed_mps
       and state.phase ~= "reverse_brake"
       and distance_to_target_m > terminal_stop_zone_m then
+      local velocity_axis = normalize(filtered_velocity)
+      local capture_alignment = velocity_axis and abs_dot(velocity_axis, target_axis) or 0
       -- Freezing the first reliable movement axis avoids the near-stop frame
       -- rotating ninety degrees and falsely collapsing the target projection.
-      state.motion_axis = normalize(filtered_velocity) or state.motion_axis
-      state.axis_frozen = true
+      if velocity_axis and capture_alignment >= DEFAULTS.axis_capture_alignment_min then
+        state.motion_axis = velocity_axis
+        state.axis_frozen = true
+      end
     end
 
     local axis = state.motion_axis
