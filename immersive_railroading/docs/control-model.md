@@ -31,6 +31,7 @@ local kd = kp * math.min(t_drive, t_brake)
 - The `goto` command only knows a point target in V1.
 - A remaining-distance speed cap based on `sqrt(2ad)` gives the controller a simple braking boundary that adapts as the learned brake model improves.
 - This is safer than trying to brake only when already near the target.
+- The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
 
 ## Why Distance And Motion Axis Are Now Separate
 - The real target is still a point in world space, so braking and arrival decisions use full point distance instead of only a projection onto the current motion frame.
@@ -43,3 +44,5 @@ local kd = kp * math.min(t_drive, t_brake)
 - No route topology or signal awareness in V1
 - Direction handling still assumes the train is roughly aligned for the intended move; route/junction logic belongs in later programs
 - The frozen axis is a robustness fix, not a substitute for real track topology on curves, junctions, or station approaches
+- V1 is currently intended for point targets that lie on an approximately straight approach from the current train position
+- Targets that sit on curves without explicit intermediate waypoints remain outside the stable V1 envelope, as seen in `reverse_test4.log`

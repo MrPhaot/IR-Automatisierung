@@ -31,6 +31,11 @@ local DEFAULTS = {
   approach_distance_m = 120,
   approach_throttle_limit = 0.4,
   cruise_throttle_limit = 0.75,
+  approach_stop_distance_m = 18,
+  approach_stop_throttle_limit = 0.08,
+  approach_stop_margin_m = 1.5,
+  approach_stop_brake_cap_mps2 = 1.0,
+  overshoot_recovery_distance_m = 18,
   brake_release_hold_s = 0.8,
   overspeed_full_brake_margin_mps = 2.0,
   min_brake_command = 0.08,
@@ -481,11 +486,35 @@ local function stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_model, 
   return math.min(cruise_mps, stop_cap)
 end
 
-local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m)
+local function conservative_stop_brake_mps2(brake_model)
+  return math.max(
+    DEFAULTS.min_brake_mps2,
+    math.min(brake_model.full_service_mps2, DEFAULTS.approach_stop_brake_cap_mps2)
+  )
+end
+
+local function required_stop_distance_m(speed_mps, stop_buffer_m, brake_model)
+  if speed_mps <= 0 then
+    return stop_buffer_m
+  end
+  local brake_mps2 = conservative_stop_brake_mps2(brake_model)
+  return stop_buffer_m + (speed_mps * speed_mps) / (2 * brake_mps2)
+end
+
+local function weight_approach_factor(characteristics)
+  local weight_ratio = clamp(characteristics.mass_kg / math.max(DEFAULTS.fallback_mass_kg, 1), 0.3, 2.5)
+  return clamp(1.15 / math.sqrt(weight_ratio), 0.5, 1.1)
+end
+
+local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
 
   if must_hold_brake then
+    return "brake"
+  end
+
+  if stop_context and stop_context.must_stop_now then
     return "brake"
   end
 
@@ -705,7 +734,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local longitudinal_error_m = vector_dot(to_target, axis)
     local lateral_error_m = vector_length(vector_reject(to_target, axis))
     local longitudinal_distance_m = math.abs(longitudinal_error_m)
-    local desired_reverser = longitudinal_error_m >= 0 and 1 or -1
+    local raw_desired_reverser = longitudinal_error_m >= 0 and 1 or -1
+    local desired_reverser = raw_desired_reverser
     if distance_to_target_m <= terminal_stop_zone_m then
       desired_reverser = state.active_reverser
     end
@@ -716,6 +746,26 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local target_speed_mps = stop_speed_cap(distance_to_target_m, stop_buffer_m, brake_model, characteristics.cruise_mps)
     if distance_to_target_m <= terminal_stop_zone_m and lateral_error_m <= DEFAULTS.arrival_lateral_m then
       target_speed_mps = 0
+    end
+    local required_stop_m = required_stop_distance_m(math.max(speed_toward_target_mps, 0), stop_buffer_m, brake_model)
+    local stop_context = {
+      required_stop_m = required_stop_m,
+      in_approach_stop = distance_to_target_m <= math.max(DEFAULTS.approach_stop_distance_m, required_stop_m + DEFAULTS.approach_stop_margin_m),
+      must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
+        and required_stop_m + DEFAULTS.approach_stop_margin_m >= distance_to_target_m,
+    }
+    local suppress_reverse_recovery = raw_desired_reverser ~= state.active_reverser
+      and distance_to_target_m <= DEFAULTS.overshoot_recovery_distance_m
+      and math.abs(speed_toward_target_mps) > DEFAULTS.arrival_speed_mps
+      and lateral_error_m <= DEFAULTS.arrival_lateral_m * 4
+    if suppress_reverse_recovery then
+      desired_reverser = state.active_reverser
+      speed_toward_target_mps = axis_speed_mps * desired_reverser
+      target_speed_mps = math.min(target_speed_mps, DEFAULTS.arrival_speed_mps)
+      required_stop_m = required_stop_distance_m(math.max(speed_toward_target_mps, 0), stop_buffer_m, brake_model)
+      stop_context.required_stop_m = required_stop_m
+      stop_context.in_approach_stop = true
+      stop_context.must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
     end
     local speed_error = target_speed_mps - speed_toward_target_mps
     local overspeed = speed_toward_target_mps - target_speed_mps
@@ -772,19 +822,28 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           state.reason = "speed_tracking"
         end
 
-        state.mode = select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m)
+        state.mode = select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
 
         if state.mode == "drive" then
           state.reason = state.phase == "reverse_launch" and "restart_after_reverse" or "speed_tracking"
           integral = clamp(integral + speed_error * dt_s, -target_speed_mps * 2, target_speed_mps * 2)
           local derivative = (speed_error - previous_error) / dt_s
           local effort = pid.kp * speed_error + pid.ki * integral + pid.kd * derivative
+          local weight_factor = weight_approach_factor(characteristics)
           local throttle_limit = distance_to_target_m <= DEFAULTS.approach_distance_m
-            and DEFAULTS.approach_throttle_limit
+            and DEFAULTS.approach_throttle_limit * weight_factor
             or DEFAULTS.cruise_throttle_limit
 
           if math.abs(speed_toward_target_mps) <= DEFAULTS.restart_from_stop_speed_mps then
-            throttle_limit = math.min(throttle_limit, DEFAULTS.launch_throttle_limit)
+            throttle_limit = math.min(throttle_limit, DEFAULTS.launch_throttle_limit * weight_factor)
+          end
+
+          if stop_context.in_approach_stop then
+            throttle_limit = math.min(throttle_limit, DEFAULTS.approach_stop_throttle_limit * weight_factor)
+          end
+
+          if stop_context.must_stop_now then
+            throttle_limit = 0
           end
 
           throttle = clamp(effort, 0, throttle_limit)
@@ -798,7 +857,28 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           -- Resetting the drive integrator while braking avoids the controller
           -- immediately snapping back to throttle after one slow sample.
           integral = 0
-          if speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
+          if suppress_reverse_recovery then
+            state.reason = "terminal_brake"
+            brake = math.max(DEFAULTS.min_brake_command, compute_brake_command(
+              math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
+              DEFAULTS.min_brake_command
+            ))
+          elseif switching_reverser then
+            state.reason = "recovery_reverse"
+            brake = math.max(
+              DEFAULTS.min_brake_command,
+              clamp(math.abs(speed_toward_target_mps) / DEFAULTS.reverse_brake_speed_scale_mps, 0, 1)
+            )
+          elseif stop_context.must_stop_now then
+            state.reason = "approach_stop"
+            brake = math.max(
+              DEFAULTS.min_brake_command,
+              compute_brake_command(
+                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
+                DEFAULTS.min_brake_command
+              )
+            )
+          elseif speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
             state.reason = "moving_away_from_target"
             brake = math.max(
               DEFAULTS.min_brake_command,
@@ -857,7 +937,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm axis=(%.3f,%.3f,%.3f) axis_frozen=%s required_stop=%.2fm approach_stop=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
         state.phase,
@@ -869,6 +949,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         axis.y,
         axis.z,
         tostring(state.axis_frozen),
+        required_stop_m,
+        tostring(stop_context.in_approach_stop),
         speed_toward_target_mps,
         axis_speed_mps,
         target_speed_mps,

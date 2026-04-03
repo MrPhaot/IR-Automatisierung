@@ -59,8 +59,15 @@ Useful real examples from that directory:
 - `train_controller.log`
 - `reverse_test.log`
 - `reverse_test1.log`
+- `reverse_test3.log`
+- `reverse_test4.log`
+- `reverse_test5.log`
 
 That path is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
+
+Current interpretation of those reference logs:
+- `reverse_test3.log` and `reverse_test5.log` are the main straight-line reference runs; they reach the target but were used to tune remaining overshoot in the last meters.
+- `reverse_test4.log` is a curve-target case and should be treated as a documented V1 limitation, not the baseline acceptance test for the straight-line controller.
 
 ## Safety Notes
 - The installer rejects:

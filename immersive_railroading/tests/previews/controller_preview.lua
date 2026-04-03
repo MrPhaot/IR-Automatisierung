@@ -173,6 +173,35 @@ local function extract_characteristics(info, consist, requested_cruise_kmh)
   }
 end
 
+local function conservative_stop_brake_mps2(brake_mps2)
+  return math.max(0.2, math.min(brake_mps2, 1.0))
+end
+
+local function required_stop_distance_m(speed_mps, stop_buffer_m, brake_mps2)
+  if speed_mps <= 0 then
+    return stop_buffer_m
+  end
+  local conservative_brake = conservative_stop_brake_mps2(brake_mps2)
+  return stop_buffer_m + (speed_mps * speed_mps) / (2 * conservative_brake)
+end
+
+local function must_stop_now(distance_to_target_m, speed_toward_target_mps, stop_buffer_m, brake_mps2)
+  local required_stop_m = required_stop_distance_m(speed_toward_target_mps, stop_buffer_m, brake_mps2)
+  return speed_toward_target_mps > 0.35 and required_stop_m + 1.5 >= distance_to_target_m
+end
+
+local function weight_approach_factor(mass_kg)
+  local weight_ratio = clamp(mass_kg / 425000, 0.3, 2.5)
+  return clamp(1.15 / math.sqrt(weight_ratio), 0.5, 1.1)
+end
+
+local function should_suppress_reverse_recovery(raw_desired_reverser, active_reverser, distance_to_target_m, speed_toward_target_mps, lateral_error_m)
+  return raw_desired_reverser ~= active_reverser
+    and distance_to_target_m <= 18
+    and math.abs(speed_toward_target_mps) > 0.35
+    and lateral_error_m <= 6.0
+end
+
 local pid = derive_pid(90000, 3000000, 200000, 38.25, 1.23)
 assert(math.abs(pid.kp - 0.0942) < 0.002, "unexpected kp")
 assert(math.abs(pid.ki - 0.0109) < 0.002, "unexpected ki")
@@ -203,6 +232,16 @@ assert(
   ) == false,
   "sideways startup jitter should not freeze the axis"
 )
+assert(
+  must_stop_now(3.47, 4.31, 3, 0.889) == true,
+  "small remaining distance with high residual speed must force braking"
+)
+assert(
+  should_suppress_reverse_recovery(-1, 1, 5.46, 3.77, 4.42) == true,
+  "small straight overshoot should brake before flipping into a large reverse recovery"
+)
+assert(weight_approach_factor(200000) > weight_approach_factor(700000), "lighter train should allow a less conservative approach factor")
+assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
 
 local extracted = extract_characteristics(
   {
@@ -227,6 +266,8 @@ print(("brake learning ok: %.3f m/s^2"):format(learned))
 print(("stop profile ok: %.2f m/s at 25m, %.2f m/s at 400m"):format(stop_cap_short, stop_cap_long))
 print(("lateral frame regression ok: %.2f m/s cap stays above zero"):format(lateral_regression_cap))
 print("axis capture regression ok: sideways startup jitter rejected")
+print("approach stop regression ok: late braking is forced near the target")
+print("overshoot recovery regression ok: small overshoot keeps braking before reverse recovery")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
   extracted.traction_n,
