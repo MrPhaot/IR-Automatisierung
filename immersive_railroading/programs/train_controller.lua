@@ -837,7 +837,15 @@ local function apply_safe_stop(remote, brake)
 end
 
 local function abort_run(remote, logger, reason, distance_to_target_m, longitudinal_error_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps)
-  pcall(apply_safe_stop, remote, DEFAULTS.abort_brake)
+  local stop_ok, stop_error = pcall(apply_safe_stop, remote, DEFAULTS.abort_brake)
+  if not stop_ok then
+    local normalized_stop_error = normalize_runtime_error(stop_error)
+    emit_line(logger, "abort safe stop failed: " .. tostring(normalized_stop_error))
+    local retry_ok, retry_error = pcall(apply_safe_stop, remote, DEFAULTS.abort_brake)
+    if not retry_ok then
+      emit_line(logger, "abort safe stop retry failed: " .. tostring(normalize_runtime_error(retry_error)))
+    end
+  end
   emit_line(logger, ("aborted_by_user reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
     tostring(reason),
     distance_to_target_m or 0,
@@ -1034,7 +1042,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     end
     local axis_speed_mps = vector_dot(filtered_velocity, target_axis)
     local motion_axis_speed_mps = vector_dot(filtered_velocity, motion_axis)
-    local speed_toward_target_mps = axis_speed_mps * desired_reverser
+    local speed_toward_target_mps = motion_axis_speed_mps * desired_reverser
     state.startup_guard_active = ((now - state.started_at) <= DEFAULTS.startup_guard_duration_s)
       and distance_to_target_m <= state.initial_distance_to_target_m + DEFAULTS.startup_guard_distance_margin_m
     state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment

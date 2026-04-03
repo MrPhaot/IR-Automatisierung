@@ -365,14 +365,20 @@ end
 
 local function normalize_runtime_error(reason)
   if type(reason) == "table" then
-    return reason.reason or reason.message or reason[1] or tostring(reason)
+    return reason.reason or reason.code or reason.message or reason[1] or tostring(reason)
   end
-  return reason
+  return tostring(reason)
+end
+
+local function uptime()
+  return 100
 end
 
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
   local profile = get_profile(state.profile_name)
   local overspeed = speed_toward_target_mps - target_speed_mps
+  local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
+
   if state.final_forward_crawl then
     return "drive"
   end
@@ -383,6 +389,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     if should_force_moving_away_brake(state, speed_toward_target_mps) then
       return "brake"
     end
+  end
+  if must_hold_brake then
+    return "brake"
   end
   if stop_context and stop_context.must_stop_now then
     return "brake"
@@ -532,6 +541,10 @@ assert(
   "active near-target correction must be able to leave brake mode from a near-stop state"
 )
 assert(
+  select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "conservative", brake_release_until = 120}, 0.02, 0.4, 20.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
+  "brake-release hold should keep the preview in brake mode until the timer expires"
+)
+assert(
   select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "fast"}, 0.02, 0.8, 3.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
   "without near-target correction the close-range brake bias should remain active"
 )
@@ -660,6 +673,7 @@ assert(
 assert(is_interrupt_reason(normalize_runtime_error("interrupted")) == true, "plain interrupted should be recognized")
 assert(is_interrupt_reason(normalize_runtime_error("terminated")) == true, "terminated should be recognized as an abort-like exit")
 assert(is_interrupt_reason(normalize_runtime_error({reason = "terminated"})) == true, "preview interrupt checks should use normalized runtime errors")
+assert(is_interrupt_reason(normalize_runtime_error({code = "terminated"})) == true, "preview normalization should also recognize code-style interrupt objects")
 
 local extracted = extract_characteristics(
   {
