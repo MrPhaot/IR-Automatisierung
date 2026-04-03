@@ -27,6 +27,9 @@ local DEFAULTS = {
   hold_brake = 0.35,
   hold_independent_brake = 1.0,
   speed_filter_memory_s = 0.8,
+  distance_progress_memory_s = 1.0,
+  moving_away_memory_s = 1.2,
+  moving_away_confidence_threshold = 0.55,
   enter_brake_margin_mps = 0.35,
   exit_brake_margin_mps = 0.9,
   approach_distance_m = 120,
@@ -58,6 +61,8 @@ local DEFAULTS = {
   terminal_settle_time_s = 1.5,
   terminal_stall_timeout_s = 3.0,
   move_away_brake_speed_mps = 0.15,
+  curve_guard_alignment = 0.8,
+  curve_guard_progress_floor_mps = -0.1,
   restart_from_stop_speed_mps = 0.25,
   launch_throttle_limit = 0.22,
   reverse_brake_min = 0.4,
@@ -300,12 +305,25 @@ local function uptime()
   return os.clock()
 end
 
+local function normalize_runtime_error(err)
+  if type(err) == "table" then
+    return err.reason or err.code or tostring(err)
+  end
+  return tostring(err)
+end
+
+local function is_interrupt_reason(reason)
+  reason = tostring(reason or ""):lower()
+  return reason:match("interrupted") ~= nil or reason:match("terminated") ~= nil or reason == "terminate"
+end
+
 local function sleep_for(seconds)
   if type(os.sleep) == "function" then
     local ok, result = pcall(os.sleep, seconds)
     if not ok then
-      if tostring(result):lower():match("interrupted") then
-        return nil, "interrupted"
+      local reason = normalize_runtime_error(result)
+      if is_interrupt_reason(reason) then
+        return nil, reason
       end
       error(result)
     end
@@ -314,13 +332,14 @@ local function sleep_for(seconds)
   if event and type(event.pull) == "function" then
     local ok, signal, a, b, c = pcall(event.pull, seconds)
     if not ok then
-      if tostring(signal):lower():match("interrupted") then
-        return nil, "interrupted"
+      local reason = normalize_runtime_error(signal)
+      if is_interrupt_reason(reason) then
+        return nil, reason
       end
       error(signal)
     end
-    if signal == "interrupted" or signal == "terminate" then
-      return nil, signal
+    if is_interrupt_reason(signal) then
+      return nil, normalize_runtime_error(signal)
     end
     return true, signal, a, b, c
   end
@@ -670,6 +689,16 @@ local function is_off_target_line_failure(distance_to_target_m, longitudinal_dis
     and longitudinal_distance_m > DEFAULTS.near_target_arrival_longitudinal_m
 end
 
+local function should_force_moving_away_brake(state, speed_toward_target_mps)
+  if speed_toward_target_mps > -DEFAULTS.move_away_brake_speed_mps then
+    return false
+  end
+  if state.curve_guard_active and state.moving_away_confidence < DEFAULTS.moving_away_confidence_threshold then
+    return false
+  end
+  return true
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile)
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
@@ -683,7 +712,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     if math.abs(speed_toward_target_mps) <= DEFAULTS.reverser_switch_speed_mps then
       return "drive"
     end
-    if speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
+    if should_force_moving_away_brake(state, speed_toward_target_mps) then
       return "brake"
     end
   end
@@ -706,7 +735,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
 
   -- If the train is moving away from the target along the chosen track axis,
   -- adding throttle only makes the oscillation worse. Force a stop first.
-  if speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
+  if should_force_moving_away_brake(state, speed_toward_target_mps) then
     return "brake"
   end
 
@@ -794,6 +823,19 @@ local function apply_safe_stop(remote)
   apply_controls(remote, safe_stop_control())
 end
 
+local function abort_run(remote, logger, reason, distance_to_target_m, longitudinal_error_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps)
+  apply_safe_stop(remote)
+  emit_line(logger, ("aborted_by_user reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
+    tostring(reason),
+    distance_to_target_m or 0,
+    longitudinal_error_m or 0,
+    lateral_error_m or 0,
+    speed_toward_target_mps or 0,
+    axis_speed_mps or 0
+  ))
+  return nil, "aborted by user"
+end
+
 local function ensure_ignition(remote)
   if type(remote.getIgnition) ~= "function" or type(remote.setIgnition) ~= "function" then
     return
@@ -841,6 +883,9 @@ end
 local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m, profile_name, logger)
   local info, info_error = read_info(remote)
   if not info then
+    if is_interrupt_reason(info_error) then
+      return abort_run(remote, logger, normalize_runtime_error(info_error))
+    end
     return nil, "failed to read train info: " .. tostring(info_error)
   end
 
@@ -851,6 +896,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
 
   local previous_time = nil
   local previous_position = nil
+  local previous_distance_to_target_m = nil
   local previous_speed_toward_target_mps = 0
   local filtered_velocity = {x = 0, y = 0, z = 0}
   local integral = 0
@@ -872,6 +918,10 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     target_line_axis = nil,
     axis_source = "target",
     axis_alignment = 1,
+    progress_speed_mps = 0,
+    distance_delta_m = 0,
+    moving_away_confidence = 0,
+    curve_guard_active = false,
     active_reverser = 1,
     stop_first_active = false,
     stopped_after_overshoot = false,
@@ -889,6 +939,9 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local now = uptime()
     local position, position_error = read_position(remote)
     if not position then
+      if is_interrupt_reason(position_error) then
+        return abort_run(remote, logger, normalize_runtime_error(position_error))
+      end
       apply_controls(remote, {
         throttle = 0,
         reverser = 0,
@@ -914,6 +967,17 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
 
     local to_target = vector_sub(target, position)
     local distance_to_target_m = vector_length(to_target)
+    local raw_progress_speed_mps = 0
+    if previous_distance_to_target_m then
+      raw_progress_speed_mps = (previous_distance_to_target_m - distance_to_target_m) / dt_s
+    end
+    state.distance_delta_m = previous_distance_to_target_m and (distance_to_target_m - previous_distance_to_target_m) or 0
+    state.progress_speed_mps = ema(
+      state.progress_speed_mps,
+      raw_progress_speed_mps,
+      DEFAULTS.distance_progress_memory_s,
+      dt_s
+    ) or raw_progress_speed_mps
     local terminal_stop_zone_m = math.max(stop_buffer_m, DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m)
 
     if not state.target_line_axis then
@@ -953,6 +1017,15 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     local axis_speed_mps = vector_dot(filtered_velocity, target_axis)
     local motion_axis_speed_mps = vector_dot(filtered_velocity, motion_axis)
     local speed_toward_target_mps = axis_speed_mps * desired_reverser
+    state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment
+      and state.progress_speed_mps >= DEFAULTS.curve_guard_progress_floor_mps
+    local moving_away_sample = (speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps and state.progress_speed_mps < 0) and 1 or 0
+    state.moving_away_confidence = ema(
+      state.moving_away_confidence,
+      moving_away_sample,
+      DEFAULTS.moving_away_memory_s,
+      dt_s
+    ) or moving_away_sample
 
     local pid = derive_pid(characteristics, brake_model)
     local target_speed_mps = stop_speed_cap(
@@ -1335,7 +1408,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
                 DEFAULTS.min_brake_command
               )
             )
-          elseif speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps then
+          elseif should_force_moving_away_brake(state, speed_toward_target_mps) then
             state.reason = "moving_away_from_target"
             brake = math.max(
               DEFAULTS.min_brake_command,
@@ -1389,12 +1462,28 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       end
     end
 
-    apply_controls(remote, control)
+    local apply_ok, apply_error = pcall(apply_controls, remote, control)
+    if not apply_ok then
+      local reason = normalize_runtime_error(apply_error)
+      if is_interrupt_reason(reason) then
+        return abort_run(
+          remote,
+          logger,
+          reason,
+          distance_to_target_m,
+          longitudinal_error_m,
+          lateral_error_m,
+          speed_toward_target_mps,
+          axis_speed_mps
+        )
+      end
+      error(apply_error)
+    end
 
     if now - last_report >= DEFAULTS.report_interval_s then
       last_report = now
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
+        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f curve_guard_active=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f\n"
       ):format(
         state.mode,
         state.phase,
@@ -1412,6 +1501,10 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         motion_axis.z,
         state.axis_source,
         state.axis_alignment,
+        state.distance_delta_m,
+        state.progress_speed_mps,
+        state.moving_away_confidence,
+        tostring(state.curve_guard_active),
         required_stop_m,
         tostring(stop_context.in_approach_stop),
         tostring(stop_context.in_no_reverse_approach),
@@ -1435,22 +1528,23 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
 
     previous_time = now
     previous_position = position
+    previous_distance_to_target_m = distance_to_target_m
     previous_speed_toward_target_mps = speed_toward_target_mps
     previous_error = speed_error
     last_control = control
 
     local sleep_ok, sleep_reason = sleep_for(DEFAULTS.loop_dt_s)
     if not sleep_ok then
-      apply_safe_stop(remote)
-      emit_line(logger, ("aborted_by_user reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
-        tostring(sleep_reason),
+      return abort_run(
+        remote,
+        logger,
+        sleep_reason,
         distance_to_target_m,
         longitudinal_error_m,
         lateral_error_m,
         speed_toward_target_mps,
         axis_speed_mps
-      ))
-      return nil, "aborted by user"
+      )
     end
   end
 end
@@ -1595,14 +1689,19 @@ if ... ~= "__module__" and can_auto_run() then
   local ok, success, err = pcall(main, argv)
 
   if not ok then
-    io.stderr:write(tostring(success) .. "\n")
+    local reason = normalize_runtime_error(success)
+    io.stderr:write(reason .. "\n")
+    if is_interrupt_reason(reason) then
+      os.exit(130)
+    end
     usage()
     os.exit(1)
   end
 
   if success == nil then
-    io.stderr:write(tostring(err) .. "\n")
-    if err == "aborted by user" then
+    local reason = normalize_runtime_error(err)
+    io.stderr:write(reason .. "\n")
+    if err == "aborted by user" or is_interrupt_reason(reason) then
       os.exit(130)
     end
     usage()

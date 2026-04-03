@@ -329,6 +329,21 @@ local function is_off_target_line_failure(distance_to_target_m, longitudinal_dis
     and longitudinal_distance_m > 2.5
 end
 
+local function should_force_moving_away_brake(state, speed_toward_target_mps)
+  if speed_toward_target_mps > -0.15 then
+    return false
+  end
+  if state.curve_guard_active and state.moving_away_confidence < 0.55 then
+    return false
+  end
+  return true
+end
+
+local function is_interrupt_reason(reason)
+  reason = tostring(reason or ""):lower()
+  return reason:match("interrupted") ~= nil or reason:match("terminated") ~= nil or reason == "terminate"
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, must_stop_now)
   local overspeed = speed_toward_target_mps - target_speed_mps
   if state.final_forward_crawl then
@@ -338,7 +353,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     if math.abs(speed_toward_target_mps) <= 0.4 then
       return "drive"
     end
-    if speed_toward_target_mps <= -0.15 then
+    if should_force_moving_away_brake(state, speed_toward_target_mps) then
       return "brake"
     end
   end
@@ -346,6 +361,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     return "brake"
   end
   if distance_to_target_m <= 1.5 * 4 and not state.near_target_correction_active then
+    return "brake"
+  end
+  if should_force_moving_away_brake(state, speed_toward_target_mps) then
     return "brake"
   end
   if overspeed >= 0.35 then
@@ -480,6 +498,26 @@ assert(
   "without near-target correction the close-range brake bias should remain active"
 )
 assert(
+  select_motion_mode({
+    mode = "drive",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    curve_guard_active = true,
+    moving_away_confidence = 0.2,
+  }, -0.22, 8.0, 205.0, false) == "drive",
+  "curve guard should suppress stop-and-go when target projection briefly goes negative on a bend"
+)
+assert(
+  select_motion_mode({
+    mode = "drive",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    curve_guard_active = false,
+    moving_away_confidence = 0.8,
+  }, -0.22, 8.0, 205.0, false) == "brake",
+  "stable negative progress should still trigger moving-away braking"
+)
+assert(
   should_use_final_forward_crawl("conservative", 9.74, 0.03, true, false) == true,
   "log14-style conservative under-target state should switch into a slow final forward crawl"
 )
@@ -500,6 +538,9 @@ assert(
   is_off_target_line_failure(2.14, 0.72, 2.02, 0.0, 0.0, true) == false,
   "reverse-test21 style near stop should remain eligible for arrived_within_v1_limit"
 )
+assert(is_interrupt_reason("interrupted") == true, "plain interrupted should be recognized")
+assert(is_interrupt_reason("terminated") == true, "terminated should be recognized as an abort-like exit")
+assert(is_interrupt_reason({reason = "terminated"}) == false, "preview helper expects normalized reasons, not raw tables")
 
 local extracted = extract_characteristics(
   {
@@ -529,6 +570,8 @@ print("approach stop regression ok: late braking is forced near the target")
 print("overshoot recovery regression ok: small overshoot keeps braking before reverse recovery")
 print("terminal brake hold regression ok: approach stop does not release the brake too early")
 print("off-target line regression ok: large residual miss is not treated as a valid terminal arrival")
+print("curve guard regression ok: bends do not immediately trigger moving-away braking")
+print("interrupt regression ok: interrupted and terminated reasons are recognized")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
   extracted.traction_n,
