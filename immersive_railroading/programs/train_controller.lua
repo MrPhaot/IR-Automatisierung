@@ -55,6 +55,8 @@ local DEFAULTS = {
   reverser_switch_speed_mps = 0.4,
   log_default_path = "train_controller.log",
   terminal_stop_margin_m = 0.75,
+  terminal_settle_time_s = 1.5,
+  terminal_stall_timeout_s = 3.0,
   move_away_brake_speed_mps = 0.15,
   restart_from_stop_speed_mps = 0.25,
   launch_throttle_limit = 0.22,
@@ -300,17 +302,33 @@ end
 
 local function sleep_for(seconds)
   if type(os.sleep) == "function" then
-    os.sleep(seconds)
-    return
+    local ok, result = pcall(os.sleep, seconds)
+    if not ok then
+      if tostring(result):lower():match("interrupted") then
+        return nil, "interrupted"
+      end
+      error(result)
+    end
+    return true
   end
   if event and type(event.pull) == "function" then
-    event.pull(seconds)
-    return
+    local ok, signal, a, b, c = pcall(event.pull, seconds)
+    if not ok then
+      if tostring(signal):lower():match("interrupted") then
+        return nil, "interrupted"
+      end
+      error(signal)
+    end
+    if signal == "interrupted" or signal == "terminate" then
+      return nil, signal
+    end
+    return true, signal, a, b, c
   end
 
   local deadline = uptime() + seconds
   while uptime() < deadline do
   end
+  return true
 end
 
 local function component_available(name)
@@ -597,6 +615,31 @@ local function should_use_final_forward_crawl(profile, longitudinal_error_m, spe
     and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
 end
 
+local function is_terminal_limit_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context)
+  return stop_context
+    and stop_context.in_no_reverse_approach
+    and distance_to_target_m <= DEFAULTS.near_target_arrival_distance_m
+    and longitudinal_distance_m <= DEFAULTS.near_target_arrival_longitudinal_m
+    and lateral_error_m <= DEFAULTS.near_target_arrival_lateral_m
+    and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
+    and math.abs(axis_speed_mps) <= DEFAULTS.arrival_speed_mps
+end
+
+local function should_fail_terminal_limit(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context)
+  return stop_context
+    and stop_context.in_no_reverse_approach
+    and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
+    and math.abs(axis_speed_mps) <= DEFAULTS.arrival_speed_mps
+    and not is_terminal_limit_arrival(
+      distance_to_target_m,
+      longitudinal_distance_m,
+      lateral_error_m,
+      speed_toward_target_mps,
+      axis_speed_mps,
+      stop_context
+    )
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile)
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
@@ -708,6 +751,19 @@ local function apply_controls(remote, control)
   remote.setIndependentBrake(control.independent_brake)
 end
 
+local function safe_stop_control()
+  return {
+    throttle = 0,
+    reverser = 0,
+    brake = DEFAULTS.hold_brake,
+    independent_brake = DEFAULTS.hold_independent_brake,
+  }
+end
+
+local function apply_safe_stop(remote)
+  apply_controls(remote, safe_stop_control())
+end
+
 local function ensure_ignition(remote)
   if type(remote.getIgnition) ~= "function" or type(remote.setIgnition) ~= "function" then
     return
@@ -791,6 +847,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     near_target_correction_active = false,
     near_target_resolution = "idle",
     final_forward_crawl = false,
+    terminal_settle_since = nil,
+    terminal_failure_since = nil,
   }
 
   ensure_ignition(remote)
@@ -985,13 +1043,54 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       lateral_error_m,
       speed_toward_target_mps
     ) or near_target_hold
+    local terminal_limit_hold = is_terminal_limit_arrival(
+      distance_to_target_m,
+      longitudinal_distance_m,
+      lateral_error_m,
+      speed_toward_target_mps,
+      axis_speed_mps,
+      stop_context
+    )
+    if terminal_limit_hold then
+      state.terminal_settle_since = state.terminal_settle_since or now
+      if now - state.terminal_settle_since >= DEFAULTS.terminal_settle_time_s then
+        hold = true
+      end
+    else
+      state.terminal_settle_since = nil
+    end
+    local terminal_limit_failure = should_fail_terminal_limit(
+      distance_to_target_m,
+      longitudinal_distance_m,
+      lateral_error_m,
+      speed_toward_target_mps,
+      axis_speed_mps,
+      stop_context
+    )
+    if terminal_limit_failure then
+      state.terminal_failure_since = state.terminal_failure_since or now
+      if now - state.terminal_failure_since >= DEFAULTS.terminal_stall_timeout_s then
+        apply_safe_stop(remote)
+        emit_line(logger, ("terminal_limit_exit reason=stalled_outside_v1_limit distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
+          distance_to_target_m,
+          longitudinal_error_m,
+          lateral_error_m,
+          speed_toward_target_mps,
+          axis_speed_mps
+        ))
+        return nil, "stalled outside V1 terminal envelope"
+      end
+    else
+      state.terminal_failure_since = nil
+    end
     local control
 
     if hold then
       settled_since = settled_since or now
       state.mode = "hold"
       state.phase = "hold"
-      state.reason = near_target_hold and "near_target_arrival" or "arrival_window"
+      state.reason = terminal_limit_hold and "arrived_within_v1_limit"
+        or (near_target_hold and "near_target_arrival" or "arrival_window")
       state.active_reverser = desired_reverser
       state.stop_first_active = false
       state.stopped_after_overshoot = false
@@ -999,6 +1098,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       state.near_target_correction_active = false
       state.near_target_resolution = near_target_hold and "arrive" or "idle"
       state.final_forward_crawl = false
+      state.terminal_failure_since = nil
       control = {
         throttle = 0,
         reverser = 0,
@@ -1007,9 +1107,14 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       }
       if now - settled_since >= DEFAULTS.settle_time_s then
         apply_controls(remote, control)
-        emit_line(logger, ("arrived at target with learned brake %.3f m/s^2 after %d samples"):format(
+        local completion_reason = terminal_limit_hold and "arrived_within_v1_limit" or "arrived_at_target"
+        emit_line(logger, ("%s learned_brake=%.3f m/s^2 samples=%d distance=%.2fm longitudinal=%.2fm lateral=%.2fm"):format(
+          completion_reason,
           brake_model.full_service_mps2,
-          brake_model.samples
+          brake_model.samples,
+          distance_to_target_m,
+          longitudinal_error_m,
+          lateral_error_m
         ))
         return true
       end
@@ -1282,7 +1387,19 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     previous_error = speed_error
     last_control = control
 
-    sleep_for(DEFAULTS.loop_dt_s)
+    local sleep_ok, sleep_reason = sleep_for(DEFAULTS.loop_dt_s)
+    if not sleep_ok then
+      apply_safe_stop(remote)
+      emit_line(logger, ("aborted_by_user reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
+        tostring(sleep_reason),
+        distance_to_target_m,
+        longitudinal_error_m,
+        lateral_error_m,
+        speed_toward_target_mps,
+        axis_speed_mps
+      ))
+      return nil, "aborted by user"
+    end
   end
 end
 
@@ -1423,16 +1540,19 @@ local exports = {
 
 if ... ~= "__module__" and can_auto_run() then
   local argv = {...}
-  local ok, result_or_error = pcall(function()
-    local success, err = main(argv)
-    if success == nil then
-      error(err)
-    end
-    return success
-  end)
+  local ok, success, err = pcall(main, argv)
 
   if not ok then
-    io.stderr:write(tostring(result_or_error) .. "\n")
+    io.stderr:write(tostring(success) .. "\n")
+    usage()
+    os.exit(1)
+  end
+
+  if success == nil then
+    io.stderr:write(tostring(err) .. "\n")
+    if err == "aborted by user" then
+      os.exit(130)
+    end
     usage()
     os.exit(1)
   end
