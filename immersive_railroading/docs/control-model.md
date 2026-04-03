@@ -44,14 +44,14 @@ local kd = kp * math.min(t_drive, t_brake)
 ## Why Distance And Motion Axis Are Now Separate
 - The real target is still a point in world space, so braking and arrival decisions use full point distance instead of only a projection onto the current motion frame.
 - The motion axis is kept only as a local track-direction hint for interpreting whether the train is moving toward or away from the target.
-- Once the train produces a reliable velocity vector, that axis is frozen for the rest of the maneuver.
-- This avoids the failure seen in `reverse_test1.log`, where a near-stop axis rotation turned almost the entire target error into lateral drift and made the controller think it had already arrived.
+- Once the train produces a reliable velocity vector, the retained `target_line_axis` keeps the route frame stable while `motion_axis` is refreshed from filtered velocity only when alignment stays good.
+- This avoids the failure seen in `reverse_test1.log`, where a near-stop axis rotation turned almost the entire target error into lateral drift and made the controller think it had already arrived, without pretending the live motion hint itself is permanently frozen.
 
 ## Known Limits
 - Straight-line waypoint distance only
 - No route topology or signal awareness in V1
 - Direction handling still assumes the train is roughly aligned for the intended move; route/junction logic belongs in later programs
-- The frozen axis is a robustness fix, not a substitute for real track topology on curves, junctions, or station approaches
+- The retained target-line axis is a robustness fix, not a substitute for real track topology on curves, junctions, or station approaches
 - V1 is currently intended for point targets that lie on an approximately straight approach from the current train position
 - Targets that sit on curves without explicit intermediate waypoints remain outside the stable V1 envelope, as seen in `reverse_test4.log`
 - `reverse_test7.log` and `reverse_test8.log` refined the straight-line endgame: immediate reverse recovery near the target is intentionally blocked until the train has actually stopped

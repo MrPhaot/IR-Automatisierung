@@ -16,12 +16,14 @@ local PROFILES = {
     no_reverse_distance_m = 42.0,
     forward_crawl_speed_mps = 0.6,
     forward_crawl_release_speed_mps = 0.2,
+    brake_exit_margin_mps = 0.2,
   },
   fast = {
     name = "fast",
     stop_cap_brake_scale = 1.0,
     required_stop_margin_m = 1.5,
     no_reverse_distance_m = 22.0,
+    brake_exit_margin_mps = 0.9,
   },
 }
 
@@ -267,8 +269,13 @@ local function parse_cli_profile(argv)
   while index <= #argv do
     local value = argv[index]
     if value == "--profile" then
-      profile_name = argv[index + 1]
-      index = index + 2
+      local next_value = argv[index + 1]
+      if next_value and next_value ~= "" and next_value:sub(1, 1) ~= "-" then
+        profile_name = next_value
+        index = index + 2
+      else
+        error("missing value for --profile (expected conservative or fast)")
+      end
     elseif value:match("^%-%-profile=") then
       profile_name = value:match("^%-%-profile=(.+)$")
       index = index + 1
@@ -353,6 +360,7 @@ local function is_interrupt_reason(reason)
 end
 
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, must_stop_now)
+  local profile = get_profile(state.profile_name)
   local overspeed = speed_toward_target_mps - target_speed_mps
   if state.final_forward_crawl then
     return "drive"
@@ -377,7 +385,9 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   if overspeed >= 0.35 then
     return "brake"
   end
-  if state.mode == "brake" and not state.near_target_correction_active and overspeed >= -0.9 then
+  if state.mode == "brake"
+    and not state.near_target_correction_active
+    and overspeed >= -profile.brake_exit_margin_mps then
     return "brake"
   end
   return "drive"
@@ -412,6 +422,8 @@ assert(conservative_stop_cap < fast_stop_cap, "conservative profile should clamp
 assert(parse_cli_profile({"goto", "1", "2", "3"}) == "conservative", "missing profile flag should default to conservative")
 assert(parse_cli_profile({"goto", "1", "2", "3", "--profile=fast"}) == "fast", "inline profile flag should parse")
 assert(parse_cli_profile({"goto", "1", "2", "3", "--profile", "conservative"}) == "conservative", "split profile flag should parse")
+assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile"}) == false, "bare split profile flag should fail")
+assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile", "--log"}) == false, "split profile flag must reject another flag as its value")
 
 local lateral_regression_cap = target_speed_cap(
   math.sqrt(0.68 ^ 2 + 147.5 ^ 2),
@@ -498,11 +510,11 @@ assert(
   "a log11-sized residual miss should be treated as a near-target limit, not as a micro-correction candidate"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = true}, 0.02, 0.8, 7.24, false) == "drive",
+  select_motion_mode({mode = "brake", near_target_correction_active = true, profile_name = "conservative"}, 0.02, 0.8, 7.24, false) == "drive",
   "active near-target correction must be able to leave brake mode from a near-stop state"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = false}, 0.02, 0.8, 3.0, false) == "brake",
+  select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "fast"}, 0.02, 0.8, 3.0, false) == "brake",
   "without near-target correction the close-range brake bias should remain active"
 )
 assert(
@@ -510,12 +522,39 @@ assert(
     mode = "drive",
     near_target_correction_active = false,
     final_forward_crawl = false,
+    profile_name = "conservative",
     startup_guard_active = false,
     curve_guard_active = true,
     moving_away_confidence = 0.2,
     progress_speed_mps = -0.05,
   }, -0.22, 8.0, 205.0, false) == "drive",
   "curve guard should suppress stop-and-go when target projection briefly goes negative on a bend"
+)
+assert(
+  select_motion_mode({
+    mode = "brake",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    profile_name = "conservative",
+    startup_guard_active = false,
+    curve_guard_active = false,
+    moving_away_confidence = 0.0,
+    progress_speed_mps = 0.0,
+  }, 0.0, 0.8, 50.0, false) == "drive",
+  "conservative profile should release brake sooner when overspeed drops below its tighter exit margin"
+)
+assert(
+  select_motion_mode({
+    mode = "brake",
+    near_target_correction_active = false,
+    final_forward_crawl = false,
+    profile_name = "fast",
+    startup_guard_active = false,
+    curve_guard_active = false,
+    moving_away_confidence = 0.0,
+    progress_speed_mps = 0.0,
+  }, 0.0, 0.8, 50.0, false) == "brake",
+  "fast profile should keep braking longer because its exit margin is looser"
 )
 assert(
   select_motion_mode({

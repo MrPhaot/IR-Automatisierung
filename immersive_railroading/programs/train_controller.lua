@@ -25,6 +25,7 @@ local DEFAULTS = {
   throttle_deadband = 0.03,
   brake_deadband = 0.03,
   hold_brake = 0.35,
+  abort_brake = 0.6,
   hold_independent_brake = 1.0,
   speed_filter_memory_s = 0.8,
   distance_progress_memory_s = 1.0,
@@ -822,21 +823,21 @@ local function apply_controls(remote, control)
   remote.setIndependentBrake(control.independent_brake)
 end
 
-local function safe_stop_control()
+local function safe_stop_control(brake)
   return {
     throttle = 0,
     reverser = 0,
-    brake = DEFAULTS.hold_brake,
+    brake = brake or DEFAULTS.hold_brake,
     independent_brake = DEFAULTS.hold_independent_brake,
   }
 end
 
-local function apply_safe_stop(remote)
-  apply_controls(remote, safe_stop_control())
+local function apply_safe_stop(remote, brake)
+  apply_controls(remote, safe_stop_control(brake))
 end
 
 local function abort_run(remote, logger, reason, distance_to_target_m, longitudinal_error_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps)
-  pcall(apply_safe_stop, remote)
+  pcall(apply_safe_stop, remote, DEFAULTS.abort_brake)
   emit_line(logger, ("aborted_by_user reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
     tostring(reason),
     distance_to_target_m or 0,
@@ -956,7 +957,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       if is_interrupt_reason(position_error) then
         return abort_run(remote, logger, normalize_runtime_error(position_error))
       end
-      apply_controls(remote, {
+      pcall(apply_controls, remote, {
         throttle = 0,
         reverser = 0,
         brake = 1,
@@ -1198,7 +1199,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
     if terminal_limit_failure then
       state.terminal_failure_since = state.terminal_failure_since or now
       if now - state.terminal_failure_since >= DEFAULTS.terminal_stall_timeout_s then
-        apply_safe_stop(remote)
+        pcall(apply_safe_stop, remote)
         local terminal_reason = is_off_target_line_failure(
           distance_to_target_m,
           longitudinal_distance_m,
@@ -1243,7 +1244,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
         independent_brake = DEFAULTS.hold_independent_brake,
       }
       if now - settled_since >= DEFAULTS.settle_time_s then
-        apply_controls(remote, control)
+        pcall(apply_controls, remote, control)
         local completion_reason = terminal_limit_hold and "arrived_within_v1_limit" or "arrived_at_target"
         emit_line(logger, ("%s learned_brake=%.3f m/s^2 samples=%d distance=%.2fm longitudinal=%.2fm lateral=%.2fm"):format(
           completion_reason,
@@ -1271,7 +1272,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           brake = DEFAULTS.hold_brake,
           independent_brake = DEFAULTS.hold_independent_brake,
         }
-        apply_controls(remote, control)
+        pcall(apply_controls, remote, control)
         emit_line(logger, ("near-target correction exceeds V1 envelope: distance=%.2fm longitudinal=%.2fm lateral=%.2fm stop_buffer=%.2fm"):format(
           distance_to_target_m,
           longitudinal_error_m,

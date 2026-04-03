@@ -25,8 +25,7 @@ Why this is the preferred entrypoint:
 ## Update Flow
 - Replace `main` with a branch, tag, or commit ref when you want reproducible installs.
 - Re-run `lua programs/ir_install.lua` after updating `programs/install_manifest.lua`.
-- Current branch work is happening on `PID-Regler`.
-- `programs/install_manifest.lua` still points to `main`, so branch-specific controller testing is safer with direct `wget` for the individual files you want to deploy.
+- When testing a non-`main` ref such as a feature branch or commit SHA, `programs/install_manifest.lua` still points to `main`, so branch-specific controller testing is safer with direct `wget` for the individual files you want to deploy.
 
 ## Train Controller Invocation
 Preferred OpenOS entrypoint:
