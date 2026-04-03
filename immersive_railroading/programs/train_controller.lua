@@ -35,6 +35,8 @@ local DEFAULTS = {
   approach_stop_throttle_limit = 0.08,
   approach_stop_margin_m = 1.5,
   approach_stop_brake_cap_mps2 = 1.0,
+  approach_stop_hold_speed_mps = 2.0,
+  approach_stop_min_brake = 0.2,
   overshoot_recovery_distance_m = 18,
   brake_release_hold_s = 0.8,
   overspeed_full_brake_margin_mps = 2.0,
@@ -506,6 +508,13 @@ local function weight_approach_factor(characteristics)
   return clamp(1.15 / math.sqrt(weight_ratio), 0.5, 1.1)
 end
 
+local function should_suppress_reverse_recovery(raw_desired_reverser, active_reverser, distance_to_target_m, speed_toward_target_mps, lateral_error_m)
+  return raw_desired_reverser ~= active_reverser
+    and distance_to_target_m <= DEFAULTS.overshoot_recovery_distance_m
+    and math.abs(speed_toward_target_mps) > DEFAULTS.arrival_speed_mps
+    and lateral_error_m <= math.max(DEFAULTS.arrival_lateral_m * 4, distance_to_target_m * 0.9)
+end
+
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
@@ -754,10 +763,13 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       must_stop_now = speed_toward_target_mps > DEFAULTS.arrival_speed_mps
         and required_stop_m + DEFAULTS.approach_stop_margin_m >= distance_to_target_m,
     }
-    local suppress_reverse_recovery = raw_desired_reverser ~= state.active_reverser
-      and distance_to_target_m <= DEFAULTS.overshoot_recovery_distance_m
-      and math.abs(speed_toward_target_mps) > DEFAULTS.arrival_speed_mps
-      and lateral_error_m <= DEFAULTS.arrival_lateral_m * 4
+    local suppress_reverse_recovery = should_suppress_reverse_recovery(
+      raw_desired_reverser,
+      state.active_reverser,
+      distance_to_target_m,
+      speed_toward_target_mps,
+      lateral_error_m
+    )
     if suppress_reverse_recovery then
       desired_reverser = state.active_reverser
       speed_toward_target_mps = axis_speed_mps * desired_reverser
@@ -863,6 +875,15 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
               math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
               DEFAULTS.min_brake_command
             ))
+          elseif stop_context.in_approach_stop and speed_toward_target_mps > DEFAULTS.arrival_speed_mps then
+            state.reason = "approach_stop"
+            brake = math.max(
+              DEFAULTS.approach_stop_min_brake,
+              compute_brake_command(
+                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
+                DEFAULTS.min_brake_command
+              )
+            )
           elseif switching_reverser then
             state.reason = "recovery_reverse"
             brake = math.max(

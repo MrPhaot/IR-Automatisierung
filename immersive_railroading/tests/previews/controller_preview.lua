@@ -199,7 +199,18 @@ local function should_suppress_reverse_recovery(raw_desired_reverser, active_rev
   return raw_desired_reverser ~= active_reverser
     and distance_to_target_m <= 18
     and math.abs(speed_toward_target_mps) > 0.35
-    and lateral_error_m <= 6.0
+    and lateral_error_m <= math.max(6.0, distance_to_target_m * 0.9)
+end
+
+local function approach_stop_brake(speed_toward_target_mps, overspeed)
+  if speed_toward_target_mps <= 0.35 then
+    return 0
+  end
+  local brake = clamp(math.max(overspeed, 0.35) / 0.35, 0, 1)
+  if brake > 0 and brake < 0.2 then
+    brake = 0.2
+  end
+  return brake
 end
 
 local pid = derive_pid(90000, 3000000, 200000, 38.25, 1.23)
@@ -240,6 +251,12 @@ assert(
   should_suppress_reverse_recovery(-1, 1, 5.46, 3.77, 4.42) == true,
   "small straight overshoot should brake before flipping into a large reverse recovery"
 )
+assert(
+  should_suppress_reverse_recovery(-1, 1, 9.04, 4.14, 7.71) == true,
+  "near-target overshoot should still suppress reverse recovery when lateral error tracks with distance"
+)
+assert(math.abs(approach_stop_brake(7.02, -0.03) - 1.0) < 0.001, "approach stop should keep braking even when overspeed briefly dips below zero")
+assert(math.abs(approach_stop_brake(0.8, -0.2) - 1.0) < 0.001, "approach stop minimum brake should not release too early")
 assert(weight_approach_factor(200000) > weight_approach_factor(700000), "lighter train should allow a less conservative approach factor")
 assert(weight_approach_factor(700000) < weight_approach_factor(425000), "heavier train should force a more conservative approach factor")
 
@@ -268,6 +285,7 @@ print(("lateral frame regression ok: %.2f m/s cap stays above zero"):format(late
 print("axis capture regression ok: sideways startup jitter rejected")
 print("approach stop regression ok: late braking is forced near the target")
 print("overshoot recovery regression ok: small overshoot keeps braking before reverse recovery")
+print("terminal brake hold regression ok: approach stop does not release the brake too early")
 print(("characteristic extraction ok: mass=%.0f traction=%.0f power=%.0fW"):format(
   extracted.mass_kg,
   extracted.traction_n,
