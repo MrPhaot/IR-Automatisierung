@@ -48,6 +48,7 @@ local HORSEPOWER_TO_W = controller.HORSEPOWER_TO_W
 local parse_cli = controller.parse_cli
 local build_goto_route_plan = controller.build_goto_route_plan
 local build_named_route_plan = controller.build_named_route_plan
+local buffer_approach_target_speed = controller.buffer_approach_target_speed
 local should_enter_stop_guidance = controller.should_enter_stop_guidance
 
 local function get_profile(name)
@@ -517,6 +518,16 @@ do
   assert(early_capture == false, "terminal stop capture should stay off while the train is still far from the buffered end point")
   assert(fast_waits == false, "fast capture should stay off until the buffered remainder enters its tighter window")
   assert(late_capture == true and reason == "buffer_window", "terminal stop capture should arm once the buffered physical distance is small enough")
+end
+
+do
+  local fast_profile = get_profile("fast")
+  local outside_zone = buffer_approach_target_speed(fast_profile, 25)
+  local within_zone = buffer_approach_target_speed(fast_profile, 9)
+  local near_capture = buffer_approach_target_speed(fast_profile, 3)
+  assert(outside_zone == nil, "fast buffer target speed should stay inactive outside its soft zone")
+  assert(within_zone ~= nil and within_zone < stop_speed_cap(15, 6, 0.9, 55), "fast buffer target speed should dominate the raw stop curve inside the soft zone")
+  assert(near_capture ~= nil and near_capture < within_zone, "fast buffer target speed should keep tightening toward the capture window")
 end
 
 local lateral_regression_cap = target_speed_cap(
