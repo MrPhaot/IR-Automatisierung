@@ -656,6 +656,28 @@ local function buffer_approach_target_speed(profile, physical_distance_minus_buf
   return final_speed_mps + (entry_speed_mps - final_speed_mps) * zone_ratio
 end
 
+local function buffer_pre_capture_target_speed(
+  profile,
+  physical_distance_minus_buffer_m,
+  brake_snapshot_mps2,
+  capture_distance_m
+)
+  profile = profile or get_profile()
+  capture_distance_m = capture_distance_m or profile.terminal_buffer_capture_distance_m or DEFAULTS.terminal_stop_capture_distance_m
+  if physical_distance_minus_buffer_m <= capture_distance_m then
+    return nil
+  end
+
+  -- Keep the shared terminal leg on a trajectory that can still enter stop
+  -- guidance before the buffered halt point gets crossed.
+  local release_speed_mps = profile.terminal_buffer_release_speed_mps
+    or profile.terminal_buffer_entry_speed_cap_mps
+    or DEFAULTS.approach_stop_hold_speed_mps
+  local effective_brake_mps2 = math.max(brake_snapshot_mps2 or DEFAULTS.fallback_brake_mps2, DEFAULTS.min_brake_mps2)
+  local braking_runway_m = math.max(physical_distance_minus_buffer_m - capture_distance_m, 0)
+  return math.sqrt(release_speed_mps * release_speed_mps + 2 * effective_brake_mps2 * braking_runway_m)
+end
+
 local function terminal_buffer_required_stop_distance_m(speed_mps, brake_snapshot_mps2)
   if speed_mps <= 0 then
     return 0
@@ -2744,6 +2766,17 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
 
     if leg.mode == "terminal" and state.guidance_mode == "route" then
       buffer_target_speed_mps = buffer_approach_target_speed(profile, physical_distance_minus_buffer_m) or 0
+      local pre_capture_target_speed_mps = buffer_pre_capture_target_speed(
+        profile,
+        physical_distance_minus_buffer_m,
+        terminal_brake_snapshot_mps2,
+        profile.terminal_buffer_capture_distance_m
+      ) or 0
+      if pre_capture_target_speed_mps > 0 then
+        buffer_target_speed_mps = buffer_target_speed_mps > 0
+          and math.min(buffer_target_speed_mps, pre_capture_target_speed_mps)
+          or pre_capture_target_speed_mps
+      end
       if buffer_target_speed_mps > 0 then
         buffer_speed_cap_active_mps = math.min(target_speed_mps, buffer_target_speed_mps)
         target_speed_mps = buffer_speed_cap_active_mps
@@ -3771,6 +3804,7 @@ local exports = {
   load_route_book = load_route_book,
   execute_route_plan = execute_route_plan,
   buffer_approach_target_speed = buffer_approach_target_speed,
+  buffer_pre_capture_target_speed = buffer_pre_capture_target_speed,
   terminal_buffer_required_stop_distance_m = terminal_buffer_required_stop_distance_m,
   can_enter_stop_guidance = can_enter_stop_guidance,
   is_terminal_success_physical_ok = is_terminal_success_physical_ok,

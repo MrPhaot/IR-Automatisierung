@@ -49,6 +49,7 @@ local parse_cli = controller.parse_cli
 local build_goto_route_plan = controller.build_goto_route_plan
 local build_named_route_plan = controller.build_named_route_plan
 local buffer_approach_target_speed = controller.buffer_approach_target_speed
+local buffer_pre_capture_target_speed = controller.buffer_pre_capture_target_speed
 local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
 local can_enter_stop_guidance = controller.can_enter_stop_guidance
 local is_terminal_success_physical_ok = controller.is_terminal_success_physical_ok
@@ -550,9 +551,13 @@ do
   local outside_zone = buffer_approach_target_speed(fast_profile, 25)
   local within_zone = buffer_approach_target_speed(fast_profile, 9)
   local near_capture = buffer_approach_target_speed(fast_profile, 3)
+  local far_pre_capture = buffer_pre_capture_target_speed(fast_profile, 30, 0.94, 5.0)
+  local near_pre_capture = buffer_pre_capture_target_speed(fast_profile, 9, 0.94, 5.0)
   assert(outside_zone == nil, "fast buffer target speed should stay inactive outside its soft zone")
   assert(within_zone ~= nil and within_zone < stop_speed_cap(15, 6, 0.9, 55), "fast buffer target speed should dominate the raw stop curve inside the soft zone")
   assert(near_capture ~= nil and near_capture < within_zone, "fast buffer target speed should keep tightening toward the capture window")
+  assert(far_pre_capture ~= nil and far_pre_capture > fast_profile.terminal_buffer_release_speed_mps, "pre-capture target speed should stay above the final release speed while there is still runway left")
+  assert(near_pre_capture ~= nil and near_pre_capture < far_pre_capture, "pre-capture target speed should tighten as the remaining runway to the capture window shrinks")
 end
 
 do
