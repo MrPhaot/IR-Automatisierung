@@ -51,6 +51,7 @@ local build_named_route_plan = controller.build_named_route_plan
 local buffer_approach_target_speed = controller.buffer_approach_target_speed
 local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
 local can_enter_stop_guidance = controller.can_enter_stop_guidance
+local is_terminal_success_physical_ok = controller.is_terminal_success_physical_ok
 local is_terminal_success_consistent = controller.is_terminal_success_consistent
 local should_enter_stop_guidance = controller.should_enter_stop_guidance
 
@@ -335,13 +336,35 @@ local function should_release_near_target_correction(stop_first_active, stopped_
     and not is_near_target_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps)
 end
 
-local function should_use_final_forward_crawl(profile_name, longitudinal_error_m, speed_toward_target_mps, in_no_reverse_approach, stop_now_flag)
+local function preview_buffer_settle_mode(profile_name, terminal_success_stop_ok, terminal_success_physical_ok, state, stop_context, geometry)
   local profile = get_profile(profile_name)
-  return profile.name == "conservative"
-    and in_no_reverse_approach
-    and not stop_now_flag
-    and longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
-    and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
+  if state.stop_first_active or state.near_target_correction_active then
+    return "none"
+  end
+  if is_terminal_success_consistent(terminal_success_stop_ok, terminal_success_physical_ok) then
+    return "none"
+  end
+  if stop_context.in_no_reverse_approach
+    and not stop_context.must_stop_now
+    and geometry.stop_longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
+    and geometry.stop_longitudinal_error_m <= (profile.buffer_settle_forward_max_longitudinal_m or 0)
+    and geometry.stop_lateral_error_m <= (profile.buffer_settle_max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
+    and math.abs(geometry.speed_toward_target_mps) <= (profile.buffer_settle_forward_speed_mps or 0)
+    and math.abs(geometry.axis_speed_mps) <= math.max(profile.buffer_settle_forward_speed_mps or 0, DEFAULTS.arrival_speed_mps * 2) then
+    return "forward"
+  end
+  if profile.name == "fast"
+    and stop_context.in_no_reverse_approach
+    and not stop_context.must_stop_now
+    and geometry.raw_desired_reverser < 0
+    and geometry.stop_longitudinal_error_m < 0
+    and math.abs(geometry.stop_longitudinal_error_m) <= (profile.buffer_settle_reverse_max_overshoot_m or 0)
+    and geometry.stop_lateral_error_m <= (profile.buffer_settle_max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
+    and math.abs(geometry.speed_toward_target_mps) <= (profile.buffer_settle_reverse_speed_mps or 0)
+    and math.abs(geometry.axis_speed_mps) <= math.max(profile.buffer_settle_reverse_speed_mps or 0, DEFAULTS.arrival_speed_mps * 2) then
+    return "reverse"
+  end
+  return "none"
 end
 
 local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, in_no_reverse_approach)
@@ -393,7 +416,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
   local stop_now_flag = stop_context and stop_context.must_stop_now
 
-  if state.final_forward_crawl and not stop_now_flag then
+  if state.buffer_settle_mode and state.buffer_settle_mode ~= "none" and not stop_now_flag then
     return "drive"
   end
   if state.near_target_correction_active then
@@ -460,7 +483,6 @@ assert(math.abs(stop_cap_short - 7.36) < 0.05, "unexpected short stop cap")
 assert(math.abs(stop_cap_long - 21.24) < 0.05, "unexpected long stop cap")
 assert(conservative_stop_cap < fast_stop_cap, "conservative profile should clamp the end-phase speed harder than fast")
 assert(profiled_stop_speed_cap(8, 3, 1.23, 55, "fast") < profiled_stop_speed_cap(8, 0, 1.23, 55, "fast"), "terminal stop planning should honor stop_buffer before late stop capture")
-assert(PROFILES.conservative.terminal_recovery_min_throttle > PROFILES.conservative.forward_crawl_throttle_limit, "conservative terminal recovery should keep a real minimum traction floor")
 assert(PROFILES.conservative.terminal_recovery_max_longitudinal_m > PROFILES.fast.terminal_recovery_max_longitudinal_m, "conservative terminal recovery should tolerate a longer residual miss window")
 assert(parse_cli_profile({"goto", "1", "2", "3"}) == "conservative", "missing profile flag should default to conservative")
 assert(parse_cli_profile({"goto", "1", "2", "3", "--profile=fast"}) == "fast", "inline profile flag should parse")
@@ -546,9 +568,50 @@ do
   assert(capture_blocked == false and capture_block_reason == "capture_speed_too_high", "fast stop capture should stay blocked until the final entry speed drops below its release limit")
   assert(math.abs(release_limit - fast_profile.terminal_buffer_release_speed_mps) < 0.001, "fast capture speed limit should honor the explicit release-speed clamp")
   assert(fast_profile.terminal_buffer_brake_window_m > 0, "fast profile should expose a hard terminal buffer brake window")
-  assert(is_terminal_success_consistent(conservative_profile, 3.1, 3.0) == true, "buffer-consistent terminal stops should be accepted")
-  assert(is_terminal_success_consistent(fast_profile, 1.7, 3.0) == false, "fast terminal success should reject a remaining buffer miss like log15")
-  assert(is_terminal_success_consistent(fast_profile, 2.9, 3.0) == true, "fast terminal success should still allow a tight buffered halt")
+  assert(is_terminal_success_physical_ok(conservative_profile, 3.1, 3.0) == true, "buffer-consistent terminal stops should be accepted")
+  assert(is_terminal_success_physical_ok(fast_profile, 1.7, 3.0) == false, "fast physical buffer success should reject a remaining buffer miss like log15")
+  assert(is_terminal_success_physical_ok(fast_profile, 2.9, 3.0) == true, "fast terminal success should still allow a tight buffered halt")
+  assert(is_terminal_success_consistent(true, true) == true, "terminal success should only pass when both checks pass")
+  assert(is_terminal_success_consistent(true, false) == false, "terminal success should fail when the physical buffer check fails")
+  assert(is_terminal_success_consistent(false, true) == false, "terminal success should fail when the stop-target check fails")
+  assert(is_terminal_success_consistent(false, false) == false, "terminal success should fail when both checks fail")
+  local conservative_undershoot_physical_ok = is_terminal_success_physical_ok(conservative_profile, 7.83, 6.0)
+  assert(conservative_undershoot_physical_ok == false, "path_test17-style conservative undershoot should stay outside the physical success corridor")
+  assert(is_terminal_success_consistent(true, conservative_undershoot_physical_ok) == false, "conservative undershoot should not count as success until both terminal checks pass")
+  assert(
+    preview_buffer_settle_mode(
+      "conservative",
+      true,
+      conservative_undershoot_physical_ok,
+      {stop_first_active = false, near_target_correction_active = false},
+      {in_no_reverse_approach = true, must_stop_now = false},
+      {
+        raw_desired_reverser = 1,
+        stop_longitudinal_error_m = 1.81,
+        stop_lateral_error_m = 0.52,
+        speed_toward_target_mps = 0.11,
+        axis_speed_mps = 0.11,
+      }
+    ) == "forward",
+    "conservative undershoot outside the physical corridor should enter bounded forward settle instead of declaring success"
+  )
+  assert(
+    preview_buffer_settle_mode(
+      "fast",
+      true,
+      false,
+      {stop_first_active = false, near_target_correction_active = false},
+      {in_no_reverse_approach = true, must_stop_now = false},
+      {
+        raw_desired_reverser = -1,
+        stop_longitudinal_error_m = -1.1,
+        stop_lateral_error_m = 0.45,
+        speed_toward_target_mps = 0.12,
+        axis_speed_mps = 0.12,
+      }
+    ) == "reverse",
+    "fast tiny overshoot should enter the bounded reverse-settle corridor"
+  )
 end
 
 local lateral_regression_cap = target_speed_cap(
@@ -723,16 +786,42 @@ assert(
   "startup guard must still allow braking when the train is clearly moving away"
 )
 assert(
-  should_use_final_forward_crawl("conservative", 9.74, 0.03, true, false) == true,
-  "log14-style conservative under-target state should switch into a slow final forward crawl"
+  preview_buffer_settle_mode(
+    "conservative",
+    false,
+    false,
+    {stop_first_active = false, near_target_correction_active = false},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      raw_desired_reverser = 1,
+      stop_longitudinal_error_m = 5.0,
+      stop_lateral_error_m = 0.4,
+      speed_toward_target_mps = 0.03,
+      axis_speed_mps = 0.03,
+    }
+  ) == "forward",
+  "log14-style conservative under-target state should switch into bounded forward settle"
 )
 assert(
-  should_use_final_forward_crawl("fast", 9.74, 0.03, true, false) == false,
-  "fast profile should not reuse the conservative final forward crawl path"
+  preview_buffer_settle_mode(
+    "fast",
+    false,
+    false,
+    {stop_first_active = false, near_target_correction_active = false},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      raw_desired_reverser = 1,
+      stop_longitudinal_error_m = 5.0,
+      stop_lateral_error_m = 0.4,
+      speed_toward_target_mps = 0.03,
+      axis_speed_mps = 0.03,
+    }
+  ) == "none",
+  "fast profile should not reuse the conservative-only forward settle corridor for the same long undershoot"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = false, final_forward_crawl = true, profile_name = "conservative"}, 0.03, 0.6, 21.08, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
-  "final forward crawl must be able to leave the conservative brake hold deadlock"
+  select_motion_mode({mode = "brake", near_target_correction_active = false, buffer_settle_mode = "forward", final_forward_crawl = false, profile_name = "conservative"}, 0.03, 0.6, 21.08, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
+  "forward settle must be able to leave the conservative brake hold deadlock"
 )
 assert(
   select_motion_mode({
