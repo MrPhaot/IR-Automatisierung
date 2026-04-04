@@ -49,6 +49,9 @@ local parse_cli = controller.parse_cli
 local build_goto_route_plan = controller.build_goto_route_plan
 local build_named_route_plan = controller.build_named_route_plan
 local buffer_approach_target_speed = controller.buffer_approach_target_speed
+local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
+local can_enter_stop_guidance = controller.can_enter_stop_guidance
+local is_terminal_success_consistent = controller.is_terminal_success_consistent
 local should_enter_stop_guidance = controller.should_enter_stop_guidance
 
 local function get_profile(name)
@@ -528,6 +531,18 @@ do
   assert(outside_zone == nil, "fast buffer target speed should stay inactive outside its soft zone")
   assert(within_zone ~= nil and within_zone < stop_speed_cap(15, 6, 0.9, 55), "fast buffer target speed should dominate the raw stop curve inside the soft zone")
   assert(near_capture ~= nil and near_capture < within_zone, "fast buffer target speed should keep tightening toward the capture window")
+end
+
+do
+  local fast_profile = get_profile("fast")
+  local required_stop = terminal_buffer_required_stop_distance_m(4.0, 0.94)
+  local too_fast, block_reason, capture_speed_limit = can_enter_stop_guidance(7.0, 4.0, 0.8, 0.98, 5.0, 4.0, 0.94, fast_profile)
+  local ready, ready_reason = can_enter_stop_guidance(7.0, 4.0, 0.8, 0.98, 5.0, 1.2, 0.94, fast_profile)
+  assert(required_stop > 8.0, "terminal stop snapshot should report a realistic braking distance for fast entry speed")
+  assert(too_fast == false and block_reason == "insufficient_braking_room" and capture_speed_limit > 0, "stop guidance should stay blocked when the terminal buffer window cannot absorb the current speed")
+  assert(ready == true and ready_reason == "buffer_window", "stop guidance should become ready once speed matches the buffered braking room")
+  assert(is_terminal_success_consistent(3.1, 3.0) == true, "buffer-consistent terminal stops should be accepted")
+  assert(is_terminal_success_consistent(0.8, 3.0) == false, "stops far away from the requested physical buffer should no longer count as consistent")
 end
 
 local lateral_regression_cap = target_speed_cap(
