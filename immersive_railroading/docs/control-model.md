@@ -37,11 +37,12 @@ local kd = kp * math.min(t_drive, t_brake)
 - The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
 - Near-target overshoots now follow a `stop_first` rule: brake to a real halt first, then either accept a small residual miss as `near_target_arrival` or allow only a very small correction move.
 - That near-target resolution is intentionally split into phases: `stop_first` handles the stop itself, then a second decision chooses `near_target_arrival`, a limited `near_target_correction`, or a logged V1 limit if the residual miss is already too large for a tiny correction.
+- The complementary failure mode is stopping short inside the terminal no-reverse window. V1.1 therefore reuses `final_forward_crawl` as a guarded forward recovery mode: if the target is still ahead, alignment remains sane, and the residual miss stays inside a small terminal corridor, the controller may apply a small minimum throttle instead of declaring an immediate stall.
 
 ## Profile Modes
 
 - `conservative` is the default profile when no explicit flag is passed to `trainctl goto`.
-- `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and preferring a very slow final forward crawl over any reverse recovery when the train ends up stopping short.
+- `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and preferring a very slow forward recovery over any reverse recovery when the train ends up stopping short.
 - `fast` keeps a looser end-phase envelope and allows more residual dynamics, so it stays closer to the old behavior and may still need fallback recovery more often.
 
 ## Why Distance And Motion Axis Are Now Separate
@@ -67,4 +68,4 @@ local kd = kp * math.min(t_drive, t_brake)
 - `route_book.lua` ships as a schema-only file because station coordinates are save-specific
 - `reverse_test7.log` and `reverse_test8.log` refined the straight-line endgame: immediate reverse recovery near the target is intentionally blocked until the train has actually stopped
 - `reverse_test10.log` and `reverse_test11.log` further show that micro-correction is only meant for small to moderate residual misses; larger misses after the stop are treated as a documented V1 limit instead of pretending a tiny correction can recover them
-- `reverse_test14.log` showed the complementary conservative failure mode: stopping short and deadlocking in final brake hold is also undesirable, so the conservative profile now needs a deliberate low-speed forward crawl for the last meters
+- `reverse_test14.log` showed the complementary conservative failure mode: stopping short and deadlocking in final brake hold is also undesirable, so the terminal leg now keeps a guarded forward recovery window before it escalates to `stalled_outside_v1_limit`

@@ -23,7 +23,7 @@ Gib mir den endgültigen Plan nur dann ab, wenn:
 
 trainctl goto 238 64 -77 55 3 --log=reverse_test17.log
 trainctl goto 238 64 -77 55 3 --profile=fast --log=reverse_test17.log
-wget -f https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/PID-Regler/immersive_railroading/programs/train_controller.lua train_controller.lua
+wget -f https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/RoutenStationen/immersive_railroading/programs/train_controller.lua train_controller.lua
 trainctl goto 238 64 -77 55 1 --log=reverse_test18.log
 trainctl goto 238 64 -77 55 6 --log=reverse_test19.log
 trainctl goto 238 64 -77 55 9 --log=reverse_test20.log

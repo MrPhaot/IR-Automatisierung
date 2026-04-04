@@ -16,6 +16,7 @@ Why the extra route layer exists:
 - the controller still does not infer rail topology from the world
 - `--via` and `route_book.lua` let you supply explicit curve geometry so before-curve runs do not collapse back onto one misleading straight target vector
 - `route_book.lua` ships empty on purpose because station coordinates are save-specific
+- the final stop now includes a low-speed forward recovery inside the terminal no-reverse window, so heavy consists are less likely to deadlock short of the goal after the route legs already worked
 
 For OpenOS train control, prefer `trainctl ...`.
 Why: the built-in `lua` frontend parses `-` and `--` arguments before your script sees them, which breaks negative coordinates and flags such as `--log` and `--profile`.
