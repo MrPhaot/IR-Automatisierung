@@ -76,6 +76,7 @@ local DEFAULTS = {
   axis_capture_alignment_min = 0.75,
   axis_lock_speed_mps = 0.5,
   route_leg_handoff_m = 6.0,
+  terminal_stop_entry_margin_m = 6.0,
   terminal_stop_guidance_distance_m = 24.0,
   terminal_stop_guidance_alignment_min = 0.9,
   moving_away_sample_progress_floor_mps = 0.35,
@@ -661,20 +662,28 @@ local function should_use_final_forward_crawl(profile, longitudinal_error_m, spe
     and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
 end
 
-local function should_enter_stop_guidance(distance_to_physical_target_m, physical_target_axis, stop_axis, stop_lateral_error_m, stop_buffer_m)
-  if not stop_axis or not physical_target_axis then
-    return false
-  end
-  if distance_to_physical_target_m > DEFAULTS.terminal_stop_guidance_distance_m then
-    return false
-  end
-  if abs_dot(physical_target_axis, stop_axis) < DEFAULTS.terminal_stop_guidance_alignment_min then
-    return false
-  end
-  return stop_lateral_error_m <= math.max(
+local function should_enter_stop_guidance(
+  physical_longitudinal_error_m,
+  physical_lateral_error_m,
+  stop_longitudinal_error_m,
+  distance_to_physical_target_m,
+  stop_buffer_m
+)
+  local lateral_limit_m = math.max(
     DEFAULTS.near_target_correction_lateral_m,
     (stop_buffer_m or 0) + DEFAULTS.arrival_lateral_m * 2
   )
+  if physical_lateral_error_m > lateral_limit_m then
+    return false
+  end
+  if physical_longitudinal_error_m <= (stop_buffer_m or 0) + DEFAULTS.terminal_stop_entry_margin_m then
+    return true, "projected_route_window"
+  end
+  if distance_to_physical_target_m <= DEFAULTS.terminal_stop_guidance_distance_m
+    and stop_longitudinal_error_m <= DEFAULTS.terminal_stop_guidance_distance_m then
+    return true, "physical_distance_fallback"
+  end
+  return false
 end
 
 local function should_track_moving_away_sample(state, speed_toward_target_mps, reference_distance_m, guidance_mode, leg_mode)
@@ -1091,9 +1100,14 @@ local function begin_leg(runtime_context)
     final_forward_crawl = false,
     guidance_mode = "route",
     moving_away_reference = "physical",
+    terminal_route_axis = nil,
     terminal_stop_axis = nil,
     terminal_stop_target = nil,
     effective_stop_buffer_m = 0,
+    stop_guidance_entry = false,
+    stop_guidance_entry_reason = "inactive",
+    stop_guidance_entry_physical_distance = 0,
+    stop_guidance_entry_stop_longitudinal = 0,
     terminal_recovery_active = false,
     terminal_recovery_eligible = false,
     terminal_recovery_block_reason = "inactive",
@@ -2097,6 +2111,7 @@ local function build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m
       physical_target = physical_target,
       previous_target = previous_waypoint and copy_point(previous_waypoint) or nil,
       next_target = waypoints[index + 1] and copy_point(waypoints[index + 1]) or nil,
+      route_axis = stop_axis,
       stop_axis = stop_axis,
       stop_target = stop_target,
       effective_stop_buffer_m = effective_stop_buffer_m,
@@ -2247,51 +2262,54 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       state.target_line_axis = normalize(to_physical_target) or {x = 1, y = 0, z = 0}
     end
 
-    local fresh_target_axis = normalize(to_physical_target)
-    if fresh_target_axis and (leg.mode ~= "terminal" or distance_to_physical_target_m > terminal_stop_zone_m) then
-      -- Each leg keeps its own route frame so a completed waypoint can hand the controller
-      -- a fresh direction reference before the old target vector becomes misleading.
-      state.target_line_axis = blend_axes(state.target_line_axis, fresh_target_axis, 0.1)
-    end
-
     if leg.mode == "terminal" then
-      if leg.stop_axis then
-        state.terminal_stop_axis = leg.stop_axis
-      elseif (not state.terminal_stop_axis) or distance_to_physical_target_m > terminal_stop_zone_m then
-        state.terminal_stop_axis = state.target_line_axis
+      if not state.terminal_route_axis then
+        state.terminal_route_axis = leg.route_axis or leg.stop_axis or state.target_line_axis
       end
-
+      state.terminal_route_axis = normalize(state.terminal_route_axis) or state.target_line_axis
+      -- The final leg must stay aligned with the last route segment so the stop
+      -- buffer is enforced along the real approach axis, not a late point vector.
+      state.target_line_axis = state.terminal_route_axis
+      state.terminal_stop_axis = state.terminal_route_axis
       state.terminal_stop_target, state.effective_stop_buffer_m, state.terminal_stop_axis =
         compute_terminal_stop_geometry(
           physical_target,
-          state.terminal_stop_axis,
+          state.terminal_route_axis,
           route_plan.stop_buffer_m,
           leg.previous_target
         )
       to_stop_target = vector_sub(state.terminal_stop_target, position)
       distance_to_stop_target_m = vector_length(to_stop_target)
     else
+      local fresh_target_axis = normalize(to_physical_target)
+      if fresh_target_axis then
+        -- Each leg keeps its own route frame so a completed waypoint can hand the controller
+        -- a fresh direction reference before the old target vector becomes misleading.
+        state.target_line_axis = blend_axes(state.target_line_axis, fresh_target_axis, 0.1)
+      end
+      state.terminal_route_axis = nil
       state.terminal_stop_axis = nil
       state.terminal_stop_target = nil
       state.effective_stop_buffer_m = 0
     end
-    physical_longitudinal_error_m = vector_dot(to_physical_target, state.target_line_axis)
-    physical_lateral_error_m = vector_length(vector_reject(to_physical_target, state.target_line_axis))
+    local physical_reference_axis = state.terminal_route_axis or state.target_line_axis
+    physical_longitudinal_error_m = vector_dot(to_physical_target, physical_reference_axis)
+    physical_lateral_error_m = vector_length(vector_reject(to_physical_target, physical_reference_axis))
     physical_longitudinal_distance_m = math.abs(physical_longitudinal_error_m)
     state.guidance_mode = state.guidance_mode or "route"
     state.moving_away_reference = state.guidance_mode == "stop" and "stop" or "physical"
-    local target_axis = state.target_line_axis
-    if leg.mode == "terminal" and state.terminal_stop_axis then
-      stop_longitudinal_error_m = vector_dot(to_stop_target, state.terminal_stop_axis)
-      stop_lateral_error_m = vector_length(vector_reject(to_stop_target, state.terminal_stop_axis))
+    local target_axis = physical_reference_axis
+    if leg.mode == "terminal" and state.terminal_route_axis then
+      stop_longitudinal_error_m = vector_dot(to_stop_target, state.terminal_route_axis)
+      stop_lateral_error_m = vector_length(vector_reject(to_stop_target, state.terminal_route_axis))
       stop_longitudinal_distance_m = math.abs(stop_longitudinal_error_m)
 
       if state.guidance_mode ~= "stop" then
-        local use_stop_guidance = should_enter_stop_guidance(
+        local use_stop_guidance, stop_guidance_entry_reason = should_enter_stop_guidance(
+          physical_longitudinal_error_m,
+          physical_lateral_error_m,
+          stop_longitudinal_error_m,
           distance_to_physical_target_m,
-          normalize(to_physical_target),
-          state.terminal_stop_axis,
-          stop_lateral_error_m,
           state.effective_stop_buffer_m
         )
         if use_stop_guidance then
@@ -2300,13 +2318,33 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           state.distance_delta_m = 0
           state.moving_away_confidence = 0
           runtime_context.previous_distance_to_target_m = distance_to_stop_target_m
+          state.stop_guidance_entry = true
+          state.stop_guidance_entry_reason = stop_guidance_entry_reason
+          if stop_longitudinal_error_m < -DEFAULTS.arrival_longitudinal_m then
+            state.stop_guidance_entry_reason = state.stop_guidance_entry_reason .. "_late"
+          end
+          state.stop_guidance_entry_physical_distance = distance_to_physical_target_m
+          state.stop_guidance_entry_stop_longitudinal = stop_longitudinal_error_m
+          emit_line(logger, ("stop_guidance_entry route_name=%s leg=%d/%d reason=%s physical_distance=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_buffer_m=%.2fm physical_target=%s terminal_stop_target=%s"):format(
+            route_plan.name,
+            leg.index,
+            leg.count,
+            state.stop_guidance_entry_reason,
+            distance_to_physical_target_m,
+            physical_longitudinal_error_m,
+            physical_lateral_error_m,
+            stop_longitudinal_error_m,
+            state.effective_stop_buffer_m,
+            format_point(physical_target),
+            format_point(state.terminal_stop_target or physical_target)
+          ))
         end
       end
       if state.guidance_mode == "stop" then
         state.moving_away_reference = "stop"
         to_target = to_stop_target
         distance_to_target_m = distance_to_stop_target_m
-        target_axis = state.terminal_stop_axis
+        target_axis = state.terminal_route_axis
       end
     else
       state.guidance_mode = "route"
@@ -2931,7 +2969,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
                 DEFAULTS.min_brake_command
               )
             )
-          elseif should_force_moving_away_brake(state, speed_toward_target_mps) then
+          elseif moving_away_brake_allowed then
             state.reason = "moving_away_from_target"
             brake = math.max(
               DEFAULTS.min_brake_command,
@@ -3007,7 +3045,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
@@ -3024,6 +3062,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         physical_lateral_error_m,
         stop_longitudinal_error_m,
         stop_lateral_error_m,
+        physical_longitudinal_error_m,
+        physical_lateral_error_m,
         target_axis.x,
         target_axis.y,
         target_axis.z,
@@ -3033,6 +3073,9 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         (state.terminal_stop_axis or target_axis).x,
         (state.terminal_stop_axis or target_axis).y,
         (state.terminal_stop_axis or target_axis).z,
+        (state.terminal_route_axis or target_axis).x,
+        (state.terminal_route_axis or target_axis).y,
+        (state.terminal_route_axis or target_axis).z,
         state.axis_source,
         state.axis_alignment,
         state.distance_delta_m,
@@ -3053,6 +3096,10 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         tostring(state.stop_first_active),
         tostring(state.near_target_correction_active),
         state.near_target_resolution,
+        tostring(state.stop_guidance_entry),
+        state.stop_guidance_entry_reason,
+        state.stop_guidance_entry_physical_distance,
+        state.stop_guidance_entry_stop_longitudinal,
         speed_toward_target_mps,
         axis_speed_mps,
         motion_axis_speed_mps,

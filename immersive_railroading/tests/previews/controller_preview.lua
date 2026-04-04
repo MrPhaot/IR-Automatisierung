@@ -473,6 +473,8 @@ do
   assert(#route_plan.legs == 3, "goto route plan should turn vias plus final target into legs")
   assert(route_plan.legs[1].mode == "pass_through", "intermediate goto waypoints should be pass-through legs")
   assert(route_plan.legs[3].mode == "terminal", "final goto waypoint should stay terminal")
+  assert(route_plan.legs[3].route_axis ~= nil, "goto terminal leg should retain the last route axis")
+  assert(dot(route_plan.legs[3].route_axis, normalize({x = 6, y = 59, z = -26})) > 0.999, "goto terminal route axis should follow the last segment")
   assert(math.abs(route_plan.legs[3].stop_target.x - 9.81) < 0.05, "goto terminal stop target should honor stop_buffer along the last leg axis")
 end
 
@@ -497,6 +499,8 @@ do
   local named_route = build_named_route_plan("depot_to_yard", {profile_name = "conservative", profile_explicit = false}, route_book)
   assert(#named_route.legs == 3, "named routes should resolve mixed station ids and raw waypoint tables")
   assert(named_route.legs[2].target.x == 85, "raw waypoint tables should stay usable in named routes")
+  assert(named_route.legs[3].route_axis ~= nil, "named routes should retain the terminal route axis")
+  assert(dot(named_route.legs[3].route_axis, normalize({x = 35, y = 0, z = -17})) > 0.999, "named route axis should follow the final segment")
   assert(math.abs(named_route.legs[3].stop_target.x - 118.16) < 0.05, "named routes should derive a terminal stop target from the last leg axis")
   local overridden_route = build_named_route_plan("depot_to_yard", {profile_name = "fast", profile_explicit = true}, route_book)
   assert(overridden_route.profile_name == "fast", "CLI profile should override the route-book profile")
