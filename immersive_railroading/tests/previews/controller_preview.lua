@@ -542,11 +542,13 @@ do
   assert(too_fast == false and block_reason == "insufficient_braking_room" and capture_speed_limit > 0, "stop guidance should stay blocked when the terminal buffer window cannot absorb the current speed")
   assert(ready == true and ready_reason == "buffer_window", "stop guidance should become ready once speed matches the buffered braking room")
   local capture_blocked, capture_block_reason, release_limit = can_enter_stop_guidance(7.0, 4.0, 0.6, 0.99, 5.0, 1.6, 0.94, fast_profile)
+  local conservative_profile = get_profile("conservative")
   assert(capture_blocked == false and capture_block_reason == "capture_speed_too_high", "fast stop capture should stay blocked until the final entry speed drops below its release limit")
   assert(math.abs(release_limit - fast_profile.terminal_buffer_release_speed_mps) < 0.001, "fast capture speed limit should honor the explicit release-speed clamp")
   assert(fast_profile.terminal_buffer_brake_window_m > 0, "fast profile should expose a hard terminal buffer brake window")
-  assert(is_terminal_success_consistent(3.1, 3.0) == true, "buffer-consistent terminal stops should be accepted")
-  assert(is_terminal_success_consistent(0.8, 3.0) == false, "stops far away from the requested physical buffer should no longer count as consistent")
+  assert(is_terminal_success_consistent(conservative_profile, 3.1, 3.0) == true, "buffer-consistent terminal stops should be accepted")
+  assert(is_terminal_success_consistent(fast_profile, 1.7, 3.0) == false, "fast terminal success should reject a remaining buffer miss like log15")
+  assert(is_terminal_success_consistent(fast_profile, 2.9, 3.0) == true, "fast terminal success should still allow a tight buffered halt")
 end
 
 local lateral_regression_cap = target_speed_cap(
