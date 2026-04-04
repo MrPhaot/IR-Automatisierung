@@ -12,8 +12,8 @@ The controller targets `component.ir_remote_control` and currently supports:
 - `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--via <x> <y> <z> ...] [--profile=conservative|fast] [--log[=path]]`
 - `route <name> [--profile=conservative|fast] [--log[=path]]`
 
-`stop_buffer_m` is the terminal stop offset along the last leg axis.
-Why: V1 now distinguishes between the physical target coordinate and the actual halting point so the train does not try to place the entity origin exactly on the final marker.
+`stop_buffer_m` is the terminal stop distance that the final leg should leave in front of the train.
+Why: V1 now uses that buffer first as remaining distance to the physical target and only freezes a final stop axis late in the end approach, so known-good curves keep working without forcing another waypoint.
 
 Why the extra route layer exists:
 - the controller still does not infer rail topology from the world

@@ -48,6 +48,7 @@ local HORSEPOWER_TO_W = controller.HORSEPOWER_TO_W
 local parse_cli = controller.parse_cli
 local build_goto_route_plan = controller.build_goto_route_plan
 local build_named_route_plan = controller.build_named_route_plan
+local should_enter_stop_guidance = controller.should_enter_stop_guidance
 
 local function get_profile(name)
   local profile = PROFILES[name or DEFAULTS.profile]
@@ -454,6 +455,7 @@ local fast_stop_cap = profiled_stop_speed_cap(25, 3, 1.23, 55, "fast")
 assert(math.abs(stop_cap_short - 7.36) < 0.05, "unexpected short stop cap")
 assert(math.abs(stop_cap_long - 21.24) < 0.05, "unexpected long stop cap")
 assert(conservative_stop_cap < fast_stop_cap, "conservative profile should clamp the end-phase speed harder than fast")
+assert(profiled_stop_speed_cap(8, 3, 1.23, 55, "fast") < profiled_stop_speed_cap(8, 0, 1.23, 55, "fast"), "terminal stop planning should honor stop_buffer before late stop capture")
 assert(PROFILES.conservative.terminal_recovery_min_throttle > PROFILES.conservative.forward_crawl_throttle_limit, "conservative terminal recovery should keep a real minimum traction floor")
 assert(PROFILES.conservative.terminal_recovery_max_longitudinal_m > PROFILES.fast.terminal_recovery_max_longitudinal_m, "conservative terminal recovery should tolerate a longer residual miss window")
 assert(parse_cli_profile({"goto", "1", "2", "3"}) == "conservative", "missing profile flag should default to conservative")
@@ -506,6 +508,13 @@ do
   assert(overridden_route.profile_name == "fast", "CLI profile should override the route-book profile")
   assert(pcall(build_named_route_plan, "missing", {profile_name = "conservative", profile_explicit = false}, route_book) == false, "unknown route ids should fail clearly")
   assert(pcall(build_named_route_plan, "broken", {profile_name = "conservative", profile_explicit = false}, route_book) == false, "unknown station ids should fail clearly")
+end
+
+do
+  local early_capture = should_enter_stop_guidance(140, 137, 1.2, 0.95)
+  local late_capture, reason = should_enter_stop_guidance(6.5, 3.5, 0.8, 0.97)
+  assert(early_capture == false, "terminal stop capture should stay off while the train is still far from the buffered end point")
+  assert(late_capture == true and reason == "buffer_window", "terminal stop capture should arm once the buffered physical distance is small enough")
 end
 
 local lateral_regression_cap = target_speed_cap(
