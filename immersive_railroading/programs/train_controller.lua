@@ -76,6 +76,11 @@ local DEFAULTS = {
   axis_capture_alignment_min = 0.75,
   axis_lock_speed_mps = 0.5,
   route_leg_handoff_m = 6.0,
+  terminal_stop_guidance_distance_m = 24.0,
+  terminal_stop_guidance_alignment_min = 0.9,
+  moving_away_sample_progress_floor_mps = 0.35,
+  moving_away_distance_margin_m = 1.0,
+  moving_away_speed_gate_mps = 0.25,
 }
 
 local PROFILES = {
@@ -656,6 +661,39 @@ local function should_use_final_forward_crawl(profile, longitudinal_error_m, spe
     and math.abs(speed_toward_target_mps) <= profile.forward_crawl_release_speed_mps
 end
 
+local function should_enter_stop_guidance(distance_to_physical_target_m, physical_target_axis, stop_axis, stop_lateral_error_m, stop_buffer_m)
+  if not stop_axis or not physical_target_axis then
+    return false
+  end
+  if distance_to_physical_target_m > DEFAULTS.terminal_stop_guidance_distance_m then
+    return false
+  end
+  if abs_dot(physical_target_axis, stop_axis) < DEFAULTS.terminal_stop_guidance_alignment_min then
+    return false
+  end
+  return stop_lateral_error_m <= math.max(
+    DEFAULTS.near_target_correction_lateral_m,
+    (stop_buffer_m or 0) + DEFAULTS.arrival_lateral_m * 2
+  )
+end
+
+local function should_track_moving_away_sample(state, speed_toward_target_mps, reference_distance_m, guidance_mode, leg_mode)
+  if speed_toward_target_mps > -DEFAULTS.move_away_brake_speed_mps then
+    return false
+  end
+  if state.progress_speed_mps > -DEFAULTS.moving_away_sample_progress_floor_mps then
+    return false
+  end
+  if math.abs(speed_toward_target_mps) < DEFAULTS.moving_away_speed_gate_mps then
+    return false
+  end
+  if (leg_mode == "pass_through" or guidance_mode == "route") and state.startup_guard_active then
+    return reference_distance_m >= (state.initial_distance_to_target_m or reference_distance_m) + DEFAULTS.moving_away_distance_margin_m
+      or speed_toward_target_mps <= -DEFAULTS.startup_guard_brake_speed_mps
+  end
+  return true
+end
+
 local should_force_moving_away_brake
 
 local function terminal_recovery_block_reason(
@@ -770,11 +808,25 @@ should_force_moving_away_brake = function(state, speed_toward_target_mps)
   return true
 end
 
-local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile)
+local function can_enforce_moving_away_brake(state, speed_toward_target_mps, reference_distance_m, guidance_mode, leg_mode)
+  if not should_force_moving_away_brake(state, speed_toward_target_mps) then
+    return false
+  end
+  if leg_mode == "pass_through" or guidance_mode == "route" then
+    return reference_distance_m >= (state.initial_distance_to_target_m or reference_distance_m) + DEFAULTS.moving_away_distance_margin_m
+      or speed_toward_target_mps <= -DEFAULTS.startup_guard_brake_speed_mps
+  end
+  return true
+end
+
+local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile, moving_away_brake_allowed)
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
   local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
   local must_stop_now = stop_context and stop_context.must_stop_now
+  if moving_away_brake_allowed == nil then
+    moving_away_brake_allowed = should_force_moving_away_brake(state, speed_toward_target_mps)
+  end
 
   if state.final_forward_crawl and not must_stop_now then
     return "drive"
@@ -784,7 +836,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
     if math.abs(speed_toward_target_mps) <= DEFAULTS.reverser_switch_speed_mps then
       return "drive"
     end
-    if should_force_moving_away_brake(state, speed_toward_target_mps) then
+    if moving_away_brake_allowed then
       return "brake"
     end
   end
@@ -807,7 +859,7 @@ local function select_motion_mode(state, speed_toward_target_mps, target_speed_m
 
   -- If the train is moving away from the target along the chosen track axis,
   -- adding throttle only makes the oscillation worse. Force a stop first.
-  if should_force_moving_away_brake(state, speed_toward_target_mps) then
+  if moving_away_brake_allowed then
     return "brake"
   end
 
@@ -1037,6 +1089,8 @@ local function begin_leg(runtime_context)
     near_target_correction_active = false,
     near_target_resolution = "idle",
     final_forward_crawl = false,
+    guidance_mode = "route",
+    moving_away_reference = "physical",
     terminal_stop_axis = nil,
     terminal_stop_target = nil,
     effective_stop_buffer_m = 0,
@@ -1232,13 +1286,26 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
       and distance_to_target_m <= state.initial_distance_to_target_m + DEFAULTS.startup_guard_distance_margin_m
     state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment
       and state.progress_speed_mps >= DEFAULTS.curve_guard_progress_floor_mps
-    local moving_away_sample = (speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps and state.progress_speed_mps < 0) and 1 or 0
+    local moving_away_sample = should_track_moving_away_sample(
+      state,
+      speed_toward_target_mps,
+      distance_to_target_m,
+      "route",
+      "terminal"
+    ) and 1 or 0
     state.moving_away_confidence = ema(
       state.moving_away_confidence,
       moving_away_sample,
       DEFAULTS.moving_away_memory_s,
       dt_s
     ) or moving_away_sample
+    local moving_away_brake_allowed = can_enforce_moving_away_brake(
+      state,
+      speed_toward_target_mps,
+      distance_to_target_m,
+      "route",
+      "terminal"
+    )
 
     local pid = derive_pid(characteristics, brake_model)
     local target_speed_mps = stop_speed_cap(
@@ -1571,7 +1638,8 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
           target_speed_mps,
           distance_to_target_m,
           stop_context,
-          profile
+          profile,
+          moving_away_brake_allowed
         )
 
         if state.mode == "drive" then
@@ -1702,7 +1770,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
                 DEFAULTS.min_brake_command
               )
             )
-          elseif should_force_moving_away_brake(state, speed_toward_target_mps) then
+          elseif moving_away_brake_allowed then
             state.reason = "moving_away_from_target"
             brake = math.max(
               DEFAULTS.min_brake_command,
@@ -2153,6 +2221,9 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local distance_to_target_m = distance_to_physical_target_m
     local to_stop_target = to_physical_target
     local distance_to_stop_target_m = distance_to_physical_target_m
+    local physical_longitudinal_error_m = 0
+    local physical_lateral_error_m = 0
+    local physical_longitudinal_distance_m = 0
     local stop_longitudinal_error_m = 0
     local stop_lateral_error_m = 0
     local stop_longitudinal_distance_m = 0
@@ -2204,21 +2275,42 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       state.terminal_stop_target = nil
       state.effective_stop_buffer_m = 0
     end
+    physical_longitudinal_error_m = vector_dot(to_physical_target, state.target_line_axis)
+    physical_lateral_error_m = vector_length(vector_reject(to_physical_target, state.target_line_axis))
+    physical_longitudinal_distance_m = math.abs(physical_longitudinal_error_m)
+    state.guidance_mode = state.guidance_mode or "route"
+    state.moving_away_reference = state.guidance_mode == "stop" and "stop" or "physical"
     local target_axis = state.target_line_axis
     if leg.mode == "terminal" and state.terminal_stop_axis then
       stop_longitudinal_error_m = vector_dot(to_stop_target, state.terminal_stop_axis)
       stop_lateral_error_m = vector_length(vector_reject(to_stop_target, state.terminal_stop_axis))
       stop_longitudinal_distance_m = math.abs(stop_longitudinal_error_m)
 
-      local use_stop_guidance = distance_to_stop_target_m <= math.max(
-        profile.no_reverse_distance_m,
-        DEFAULTS.overshoot_recovery_distance_m
-      )
-      if use_stop_guidance then
+      if state.guidance_mode ~= "stop" then
+        local use_stop_guidance = should_enter_stop_guidance(
+          distance_to_physical_target_m,
+          normalize(to_physical_target),
+          state.terminal_stop_axis,
+          stop_lateral_error_m,
+          state.effective_stop_buffer_m
+        )
+        if use_stop_guidance then
+          state.guidance_mode = "stop"
+          state.progress_speed_mps = 0
+          state.distance_delta_m = 0
+          state.moving_away_confidence = 0
+          runtime_context.previous_distance_to_target_m = distance_to_stop_target_m
+        end
+      end
+      if state.guidance_mode == "stop" then
+        state.moving_away_reference = "stop"
         to_target = to_stop_target
         distance_to_target_m = distance_to_stop_target_m
         target_axis = state.terminal_stop_axis
       end
+    else
+      state.guidance_mode = "route"
+      state.moving_away_reference = "physical"
     end
 
     state.initial_distance_to_target_m = state.initial_distance_to_target_m or distance_to_target_m
@@ -2252,13 +2344,26 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       and distance_to_target_m <= state.initial_distance_to_target_m + DEFAULTS.startup_guard_distance_margin_m
     state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment
       and state.progress_speed_mps >= DEFAULTS.curve_guard_progress_floor_mps
-    local moving_away_sample = (speed_toward_target_mps <= -DEFAULTS.move_away_brake_speed_mps and state.progress_speed_mps < 0) and 1 or 0
+    local moving_away_sample = should_track_moving_away_sample(
+      state,
+      speed_toward_target_mps,
+      distance_to_target_m,
+      state.guidance_mode,
+      leg.mode
+    ) and 1 or 0
     state.moving_away_confidence = ema(
       state.moving_away_confidence,
       moving_away_sample,
       DEFAULTS.moving_away_memory_s,
       dt_s
     ) or moving_away_sample
+    local moving_away_brake_allowed = can_enforce_moving_away_brake(
+      state,
+      speed_toward_target_mps,
+      distance_to_target_m,
+      state.guidance_mode,
+      leg.mode
+    )
 
     if leg.mode == "pass_through" then
       local handoff_reason = pass_through_handoff_reason(
@@ -2306,7 +2411,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local terminal_recovery_eligible = false
     local terminal_recovery_block = leg.mode == "terminal" and "outside_no_reverse_approach" or "non_terminal_leg"
 
-    if leg.mode == "terminal" then
+    if leg.mode == "terminal" and state.guidance_mode == "stop" then
       required_stop_m = required_stop_distance_m(
         math.max(speed_toward_target_mps, 0),
         0,
@@ -2442,93 +2547,106 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local switching_reverser = desired_reverser ~= state.active_reverser
 
     if leg.mode == "terminal" then
-      if near_target_hold then
-        state.near_target_resolution = "arrive"
-      elseif not state.stop_first_active
-        and not state.near_target_correction_active
-        and state.near_target_resolution ~= "limit" then
-        state.near_target_resolution = "idle"
-      end
-
-      hold = is_strict_arrival(
-        distance_to_stop_target_m,
-        stop_longitudinal_distance_m,
-        stop_lateral_error_m,
-        speed_toward_target_mps
-      ) or near_target_hold
-      terminal_limit_hold = is_terminal_limit_arrival(
-        distance_to_stop_target_m,
-        stop_longitudinal_distance_m,
-        stop_lateral_error_m,
-        speed_toward_target_mps,
-        axis_speed_mps,
-        stop_context
-      )
-      if terminal_limit_hold then
-        state.terminal_settle_since = state.terminal_settle_since or now
-        if now - state.terminal_settle_since >= DEFAULTS.terminal_settle_time_s then
-          hold = true
+      if state.guidance_mode == "stop" then
+        if near_target_hold then
+          state.near_target_resolution = "arrive"
+        elseif not state.stop_first_active
+          and not state.near_target_correction_active
+          and state.near_target_resolution ~= "limit" then
+          state.near_target_resolution = "idle"
         end
-      else
-        state.terminal_settle_since = nil
-      end
 
-      local terminal_limit_failure = should_fail_terminal_limit(
-        distance_to_stop_target_m,
-        stop_longitudinal_distance_m,
-        stop_lateral_error_m,
-        speed_toward_target_mps,
-        axis_speed_mps,
-        stop_context,
-        terminal_recovery_eligible
-      )
-      if terminal_limit_failure then
-        state.terminal_failure_since = state.terminal_failure_since or now
-        if now - state.terminal_failure_since >= DEFAULTS.terminal_stall_timeout_s then
-          local stop_ok, stop_error = pcall(apply_safe_stop, remote)
-          if not stop_ok then
-            local normalized_stop_error = normalize_runtime_error(stop_error)
-            if is_interrupt_reason(normalized_stop_error) then
-              return abort_run(
-                remote,
-                logger,
-                normalized_stop_error,
-                distance_to_target_m,
-                longitudinal_error_m,
-                lateral_error_m,
-                speed_toward_target_mps,
-                axis_speed_mps
-              )
-            end
-            return nil, "failed to apply terminal safe stop: " .. tostring(normalized_stop_error)
+        hold = is_strict_arrival(
+          distance_to_stop_target_m,
+          stop_longitudinal_distance_m,
+          stop_lateral_error_m,
+          speed_toward_target_mps
+        ) or near_target_hold
+        terminal_limit_hold = is_terminal_limit_arrival(
+          distance_to_stop_target_m,
+          stop_longitudinal_distance_m,
+          stop_lateral_error_m,
+          speed_toward_target_mps,
+          axis_speed_mps,
+          stop_context
+        )
+        if terminal_limit_hold then
+          state.terminal_settle_since = state.terminal_settle_since or now
+          if now - state.terminal_settle_since >= DEFAULTS.terminal_settle_time_s then
+            hold = true
           end
-          local terminal_reason = is_off_target_line_failure(
-            distance_to_stop_target_m,
-            stop_longitudinal_distance_m,
-            stop_lateral_error_m,
-            speed_toward_target_mps,
-            axis_speed_mps,
-            stop_context
-          ) and "stalled_off_target_line" or "stalled_outside_v1_limit"
-          emit_line(logger, ("terminal_limit_exit route_name=%s leg=%d/%d reason=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s stop_buffer_m=%.2fm physical_target=%s terminal_stop_target=%s"):format(
-            route_plan.name,
-            leg.index,
-            leg.count,
-            terminal_reason,
-            distance_to_stop_target_m,
-            distance_to_physical_target_m,
-            stop_longitudinal_error_m,
-            stop_lateral_error_m,
-            speed_toward_target_mps,
-            axis_speed_mps,
-            state.effective_stop_buffer_m,
-            format_point(physical_target),
-            format_point(state.terminal_stop_target or physical_target)
-          ))
-          return nil, "stalled outside V1 terminal envelope"
+        else
+          state.terminal_settle_since = nil
+        end
+
+        local terminal_limit_failure = should_fail_terminal_limit(
+          distance_to_stop_target_m,
+          stop_longitudinal_distance_m,
+          stop_lateral_error_m,
+          speed_toward_target_mps,
+          axis_speed_mps,
+          stop_context,
+          terminal_recovery_eligible
+        )
+        if terminal_limit_failure then
+          state.terminal_failure_since = state.terminal_failure_since or now
+          if now - state.terminal_failure_since >= DEFAULTS.terminal_stall_timeout_s then
+            local stop_ok, stop_error = pcall(apply_safe_stop, remote)
+            if not stop_ok then
+              local normalized_stop_error = normalize_runtime_error(stop_error)
+              if is_interrupt_reason(normalized_stop_error) then
+                return abort_run(
+                  remote,
+                  logger,
+                  normalized_stop_error,
+                  distance_to_target_m,
+                  longitudinal_error_m,
+                  lateral_error_m,
+                  speed_toward_target_mps,
+                  axis_speed_mps
+                )
+              end
+              return nil, "failed to apply terminal safe stop: " .. tostring(normalized_stop_error)
+            end
+            local terminal_reason = is_off_target_line_failure(
+              distance_to_stop_target_m,
+              stop_longitudinal_distance_m,
+              stop_lateral_error_m,
+              speed_toward_target_mps,
+              axis_speed_mps,
+              stop_context
+            ) and "stalled_off_target_line" or "stalled_outside_v1_limit"
+            emit_line(logger, ("terminal_limit_exit route_name=%s leg=%d/%d reason=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s stop_buffer_m=%.2fm physical_target=%s terminal_stop_target=%s"):format(
+              route_plan.name,
+              leg.index,
+              leg.count,
+              terminal_reason,
+              distance_to_stop_target_m,
+              distance_to_physical_target_m,
+              stop_longitudinal_error_m,
+              stop_lateral_error_m,
+              speed_toward_target_mps,
+              axis_speed_mps,
+              state.effective_stop_buffer_m,
+              format_point(physical_target),
+              format_point(state.terminal_stop_target or physical_target)
+            ))
+            return nil, "stalled outside V1 terminal envelope"
+          end
+        else
+          state.terminal_failure_since = nil
         end
       else
+        hold = false
+        terminal_limit_hold = false
+        state.terminal_settle_since = nil
         state.terminal_failure_since = nil
+        state.final_forward_crawl = false
+        state.stop_first_active = false
+        state.stopped_after_overshoot = false
+        state.halted_near_target_since = nil
+        state.near_target_correction_active = false
+        state.near_target_resolution = "idle"
       end
 
       state.terminal_recovery_active = state.final_forward_crawl
@@ -2606,7 +2724,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       local throttle = 0
       local brake = 0
 
-      if leg.mode == "terminal" and state.near_target_resolution == "limit" then
+      if leg.mode == "terminal" and state.guidance_mode == "stop" and state.near_target_resolution == "limit" then
         state.final_forward_crawl = false
         state.mode = "hold"
         state.phase = "hold"
@@ -2675,7 +2793,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           target_speed_mps,
           distance_to_target_m,
           stop_context,
-          profile
+          profile,
+          moving_away_brake_allowed
         )
 
         if state.mode == "drive" then
@@ -2888,15 +3007,21 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
         state.reason,
         profile.name,
+        state.guidance_mode,
+        state.moving_away_reference,
         final_profile_mode,
-        distance_to_stop_target_m,
+        distance_to_target_m,
         distance_to_physical_target_m,
+        longitudinal_error_m,
+        lateral_error_m,
+        physical_longitudinal_error_m,
+        physical_lateral_error_m,
         stop_longitudinal_error_m,
         stop_lateral_error_m,
         target_axis.x,
