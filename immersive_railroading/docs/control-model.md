@@ -33,6 +33,7 @@ local kd = kp * math.min(t_drive, t_brake)
 - The terminal leg of `goto` or `route` still resolves to one point target in V1.
 - A remaining-distance speed cap based on `sqrt(2ad)` gives the controller a simple braking boundary that adapts as the learned brake model improves.
 - This is safer than trying to brake only when already near the target.
+- `stop_buffer_m` now shifts the terminal halting point backward along the last leg axis instead of acting only as an abstract brake reserve, so the controller can stop before the marker without trying to force the entity origin onto it.
 - The default `conservative` profile intentionally scales that end-phase envelope down further so the train is more likely to stop without any reverse recovery on straight target runs.
 - The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
 - Near-target overshoots now follow a `stop_first` rule: brake to a real halt first, then either accept a small residual miss as `near_target_arrival` or allow only a very small correction move.

@@ -12,6 +12,9 @@ The controller targets `component.ir_remote_control` and currently supports:
 - `goto <x> <y> <z> [cruise_kmh] [stop_buffer_m] [--via <x> <y> <z> ...] [--profile=conservative|fast] [--log[=path]]`
 - `route <name> [--profile=conservative|fast] [--log[=path]]`
 
+`stop_buffer_m` is the terminal stop offset along the last leg axis.
+Why: V1 now distinguishes between the physical target coordinate and the actual halting point so the train does not try to place the entity origin exactly on the final marker.
+
 Why the extra route layer exists:
 - the controller still does not infer rail topology from the world
 - `--via` and `route_book.lua` let you supply explicit curve geometry so before-curve runs do not collapse back onto one misleading straight target vector

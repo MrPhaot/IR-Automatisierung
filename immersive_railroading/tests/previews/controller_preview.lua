@@ -473,6 +473,7 @@ do
   assert(#route_plan.legs == 3, "goto route plan should turn vias plus final target into legs")
   assert(route_plan.legs[1].mode == "pass_through", "intermediate goto waypoints should be pass-through legs")
   assert(route_plan.legs[3].mode == "terminal", "final goto waypoint should stay terminal")
+  assert(math.abs(route_plan.legs[3].stop_target.x - 9.81) < 0.05, "goto terminal stop target should honor stop_buffer along the last leg axis")
 end
 
 do
@@ -496,6 +497,7 @@ do
   local named_route = build_named_route_plan("depot_to_yard", {profile_name = "conservative", profile_explicit = false}, route_book)
   assert(#named_route.legs == 3, "named routes should resolve mixed station ids and raw waypoint tables")
   assert(named_route.legs[2].target.x == 85, "raw waypoint tables should stay usable in named routes")
+  assert(math.abs(named_route.legs[3].stop_target.x - 118.16) < 0.05, "named routes should derive a terminal stop target from the last leg axis")
   local overridden_route = build_named_route_plan("depot_to_yard", {profile_name = "fast", profile_explicit = true}, route_book)
   assert(overridden_route.profile_name == "fast", "CLI profile should override the route-book profile")
   assert(pcall(build_named_route_plan, "missing", {profile_name = "conservative", profile_explicit = false}, route_book) == false, "unknown route ids should fail clearly")

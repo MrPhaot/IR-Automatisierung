@@ -1037,6 +1037,9 @@ local function begin_leg(runtime_context)
     near_target_correction_active = false,
     near_target_resolution = "idle",
     final_forward_crawl = false,
+    terminal_stop_axis = nil,
+    terminal_stop_target = nil,
+    effective_stop_buffer_m = 0,
     terminal_recovery_active = false,
     terminal_recovery_eligible = false,
     terminal_recovery_block_reason = "inactive",
@@ -1981,6 +1984,27 @@ local function load_route_book()
   return route_book_or_error
 end
 
+local function compute_terminal_stop_geometry(physical_target, stop_axis, stop_buffer_m, previous_target)
+  local normalized_axis = stop_axis and normalize(stop_axis) or nil
+  local requested_stop_buffer_m = math.max(stop_buffer_m or 0, 0)
+  if requested_stop_buffer_m <= 0 or not normalized_axis then
+    return copy_point(physical_target), 0, normalized_axis
+  end
+
+  local effective_stop_buffer_m = requested_stop_buffer_m
+  if previous_target then
+    local leg_length_m = vector_length(vector_sub(physical_target, previous_target))
+    effective_stop_buffer_m = math.min(
+      requested_stop_buffer_m,
+      math.max(leg_length_m - DEFAULTS.arrival_distance_m, 0)
+    )
+  end
+
+  return vector_sub(physical_target, vector_scale(normalized_axis, effective_stop_buffer_m)),
+    effective_stop_buffer_m,
+    normalized_axis
+end
+
 local function build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m, profile_name)
   if type(waypoints) ~= "table" or #waypoints == 0 then
     error(("route %s has no waypoints"):format(route_name))
@@ -1988,12 +2012,26 @@ local function build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m
 
   local legs = {}
   for index, waypoint in ipairs(waypoints) do
+    local previous_waypoint = waypoints[index - 1]
+    local physical_target = copy_point(waypoint)
+    local stop_axis = previous_waypoint and normalize(vector_sub(waypoint, previous_waypoint)) or nil
+    local stop_target, effective_stop_buffer_m = compute_terminal_stop_geometry(
+      physical_target,
+      stop_axis,
+      index == #waypoints and stop_buffer_m or 0,
+      previous_waypoint
+    )
     legs[index] = {
       index = index,
       count = #waypoints,
       mode = index < #waypoints and "pass_through" or "terminal",
-      target = copy_point(waypoint),
+      target = physical_target,
+      physical_target = physical_target,
+      previous_target = previous_waypoint and copy_point(previous_waypoint) or nil,
       next_target = waypoints[index + 1] and copy_point(waypoints[index + 1]) or nil,
+      stop_axis = stop_axis,
+      stop_target = stop_target,
+      effective_stop_buffer_m = effective_stop_buffer_m,
     }
   end
 
@@ -2071,6 +2109,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
   local brake_model = runtime_context.brake_model
   local state = begin_leg(runtime_context)
   local target = leg.target
+  local physical_target = leg.physical_target or target
 
   while true do
     local now = uptime()
@@ -2108,8 +2147,10 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     runtime_context.filtered_velocity.z = ema(runtime_context.filtered_velocity.z, velocity_vector.z, DEFAULTS.speed_filter_memory_s, dt_s)
     local filtered_speed_mps = vector_length(runtime_context.filtered_velocity)
 
-    local to_target = vector_sub(target, position)
-    local distance_to_target_m = vector_length(to_target)
+    local to_physical_target = vector_sub(physical_target, position)
+    local distance_to_physical_target_m = vector_length(to_physical_target)
+    local to_target = to_physical_target
+    local distance_to_target_m = distance_to_physical_target_m
     state.initial_distance_to_target_m = state.initial_distance_to_target_m or distance_to_target_m
     local raw_progress_speed_mps = 0
     if runtime_context.previous_distance_to_target_m then
@@ -2125,23 +2166,44 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       dt_s
     ) or raw_progress_speed_mps
 
-    local terminal_stop_zone_m = math.max(
-      route_plan.stop_buffer_m,
-      DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m
-    )
+    local terminal_stop_zone_m = DEFAULTS.arrival_distance_m + DEFAULTS.terminal_stop_margin_m
 
     if not state.target_line_axis then
-      state.target_line_axis = normalize(to_target) or {x = 1, y = 0, z = 0}
+      state.target_line_axis = normalize(to_physical_target) or {x = 1, y = 0, z = 0}
     end
 
-    local fresh_target_axis = normalize(to_target)
-    if fresh_target_axis and (leg.mode ~= "terminal" or distance_to_target_m > terminal_stop_zone_m) then
+    local fresh_target_axis = normalize(to_physical_target)
+    if fresh_target_axis and (leg.mode ~= "terminal" or distance_to_physical_target_m > terminal_stop_zone_m) then
       -- Each leg keeps its own route frame so a completed waypoint can hand the controller
       -- a fresh direction reference before the old target vector becomes misleading.
       state.target_line_axis = blend_axes(state.target_line_axis, fresh_target_axis, 0.1)
     end
 
-    local target_axis = state.target_line_axis
+    if leg.mode == "terminal" then
+      if leg.stop_axis then
+        state.terminal_stop_axis = leg.stop_axis
+      elseif (not state.terminal_stop_axis) or distance_to_physical_target_m > terminal_stop_zone_m then
+        state.terminal_stop_axis = state.target_line_axis
+      end
+
+      state.terminal_stop_target, state.effective_stop_buffer_m, state.terminal_stop_axis =
+        compute_terminal_stop_geometry(
+          physical_target,
+          state.terminal_stop_axis,
+          route_plan.stop_buffer_m,
+          leg.previous_target
+        )
+      to_target = vector_sub(state.terminal_stop_target, position)
+      distance_to_target_m = vector_length(to_target)
+    else
+      state.terminal_stop_axis = nil
+      state.terminal_stop_target = nil
+      state.effective_stop_buffer_m = 0
+    end
+
+    state.initial_distance_to_target_m = state.initial_distance_to_target_m or distance_to_target_m
+
+    local target_axis = leg.mode == "terminal" and (state.terminal_stop_axis or state.target_line_axis) or state.target_line_axis
     local velocity_axis = filtered_speed_mps >= DEFAULTS.axis_capture_speed_mps and normalize(runtime_context.filtered_velocity) or nil
     local capture_alignment = velocity_axis and abs_dot(velocity_axis, target_axis) or 0
     state.axis_alignment = capture_alignment
@@ -2199,7 +2261,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local target_speed_mps = leg.mode == "terminal"
       and stop_speed_cap(
         distance_to_target_m,
-        route_plan.stop_buffer_m,
+        0,
         brake_model,
         characteristics.cruise_mps,
         profile
@@ -2229,7 +2291,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     if leg.mode == "terminal" then
       required_stop_m = required_stop_distance_m(
         math.max(speed_toward_target_mps, 0),
-        route_plan.stop_buffer_m,
+        0,
         brake_model
       )
       stop_context = {
@@ -2295,7 +2357,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         target_speed_mps = math.min(target_speed_mps, DEFAULTS.arrival_speed_mps)
         required_stop_m = required_stop_distance_m(
           math.max(speed_toward_target_mps, 0),
-          route_plan.stop_buffer_m,
+          0,
           brake_model
         )
         stop_context.required_stop_m = required_stop_m
@@ -2430,16 +2492,20 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             axis_speed_mps,
             stop_context
           ) and "stalled_off_target_line" or "stalled_outside_v1_limit"
-          emit_line(logger, ("terminal_limit_exit route_name=%s leg=%d/%d reason=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s"):format(
+          emit_line(logger, ("terminal_limit_exit route_name=%s leg=%d/%d reason=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm speed_toward_target=%.2fm/s axis_speed=%.2fm/s stop_buffer_m=%.2fm physical_target=%s terminal_stop_target=%s"):format(
             route_plan.name,
             leg.index,
             leg.count,
             terminal_reason,
             distance_to_target_m,
+            distance_to_physical_target_m,
             longitudinal_error_m,
             lateral_error_m,
             speed_toward_target_mps,
-            axis_speed_mps
+            axis_speed_mps,
+            state.effective_stop_buffer_m,
+            format_point(physical_target),
+            format_point(state.terminal_stop_target or physical_target)
           ))
           return nil, "stalled outside V1 terminal envelope"
         end
@@ -2500,7 +2566,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           return nil, "failed to apply arrival hold controls: " .. tostring(normalized_hold_error)
         end
         local completion_reason = terminal_limit_hold and "arrived_within_v1_limit" or "arrived_at_target"
-        emit_line(logger, ("%s route_name=%s leg=%d/%d learned_brake=%.3f m/s^2 samples=%d distance=%.2fm longitudinal=%.2fm lateral=%.2fm"):format(
+        emit_line(logger, ("%s route_name=%s leg=%d/%d learned_brake=%.3f m/s^2 samples=%d distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm stop_buffer_m=%.2fm physical_target=%s terminal_stop_target=%s"):format(
           completion_reason,
           route_plan.name,
           leg.index,
@@ -2508,8 +2574,12 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           brake_model.full_service_mps2,
           brake_model.samples,
           distance_to_target_m,
+          distance_to_physical_target_m,
           longitudinal_error_m,
-          lateral_error_m
+          lateral_error_m,
+          state.effective_stop_buffer_m,
+          format_point(physical_target),
+          format_point(state.terminal_stop_target or physical_target)
         ))
         return "complete"
       end
@@ -2546,14 +2616,17 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           end
           return nil, "failed to apply near-target limit hold controls: " .. tostring(normalized_hold_error)
         end
-        emit_line(logger, ("near-target correction exceeds V1 envelope route_name=%s leg=%d/%d distance=%.2fm longitudinal=%.2fm lateral=%.2fm stop_buffer=%.2fm"):format(
+        emit_line(logger, ("near-target correction exceeds V1 envelope route_name=%s leg=%d/%d distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm stop_buffer=%.2fm physical_target=%s terminal_stop_target=%s"):format(
           route_plan.name,
           leg.index,
           leg.count,
           distance_to_target_m,
+          distance_to_physical_target_m,
           longitudinal_error_m,
           lateral_error_m,
-          route_plan.stop_buffer_m
+          state.effective_stop_buffer_m,
+          format_point(physical_target),
+          format_point(state.terminal_stop_target or physical_target)
         ))
         return nil, "near-target correction exceeds V1 envelope"
       end
@@ -2797,7 +2870,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s leg_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm longitudinal=%.2fm lateral=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f stop_first=%s near_target_correction=%s near_target_resolution=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
@@ -2805,6 +2878,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         profile.name,
         final_profile_mode,
         distance_to_target_m,
+        distance_to_physical_target_m,
         longitudinal_error_m,
         lateral_error_m,
         target_axis.x,
@@ -2813,6 +2887,9 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         motion_axis.x,
         motion_axis.y,
         motion_axis.z,
+        (state.terminal_stop_axis or target_axis).x,
+        (state.terminal_stop_axis or target_axis).y,
+        (state.terminal_stop_axis or target_axis).z,
         state.axis_source,
         state.axis_alignment,
         state.distance_delta_m,
@@ -2821,6 +2898,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         tostring(state.startup_guard_active),
         tostring(state.curve_guard_active),
         required_stop_m,
+        state.effective_stop_buffer_m,
         tostring(stop_context.in_approach_stop),
         tostring(stop_context.in_no_reverse_approach),
         tostring(state.final_forward_crawl),
@@ -2847,7 +2925,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         leg.index,
         leg.count,
         leg.mode,
-        format_point(target),
+        format_point(physical_target),
+        format_point(state.terminal_stop_target or physical_target),
         leg_transition_reason or "route_start"
       ):gsub("\n$", ""))
     end
