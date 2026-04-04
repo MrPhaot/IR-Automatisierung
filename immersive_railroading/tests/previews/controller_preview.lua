@@ -511,9 +511,11 @@ do
 end
 
 do
-  local early_capture = should_enter_stop_guidance(140, 137, 1.2, 0.95)
-  local late_capture, reason = should_enter_stop_guidance(6.5, 3.5, 0.8, 0.97)
+  local early_capture = should_enter_stop_guidance(140, 137, 1.2, 0.95, 8.0)
+  local fast_waits = should_enter_stop_guidance(6.5, 5.5, 0.8, 0.97, 5.0)
+  local late_capture, reason = should_enter_stop_guidance(6.5, 3.5, 0.8, 0.97, 5.0)
   assert(early_capture == false, "terminal stop capture should stay off while the train is still far from the buffered end point")
+  assert(fast_waits == false, "fast capture should stay off until the buffered remainder enters its tighter window")
   assert(late_capture == true and reason == "buffer_window", "terminal stop capture should arm once the buffered physical distance is small enough")
 end
 
