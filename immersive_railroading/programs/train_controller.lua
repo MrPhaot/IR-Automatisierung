@@ -1011,7 +1011,10 @@ local function should_fail_terminal_limit(
 )
   return stop_context
     and stop_context.in_no_reverse_approach
-    and terminal_success_consistent ~= false
+    -- Once the train is already halted in stop guidance, an inconsistent stop
+    -- must still terminate somehow. Otherwise "target ahead but stopped" can
+    -- deadlock in final_brake_hold with neither recovery nor failure active.
+    and terminal_success_consistent ~= true
     and not terminal_recovery_eligible
     and math.abs(speed_toward_target_mps) <= DEFAULTS.arrival_speed_mps
     and math.abs(axis_speed_mps) <= DEFAULTS.arrival_speed_mps
