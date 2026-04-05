@@ -81,6 +81,8 @@ local DEFAULTS = {
   terminal_stop_guidance_alignment_min = 0.9,
   terminal_success_buffer_tolerance_m = 2.0,
   terminal_success_buffer_tolerance_fast_m = 0.9,
+  terminal_deadlock_forward_max_longitudinal_m = 12.0,
+  terminal_deadlock_forward_speed_mps = 0.15,
   moving_away_sample_progress_floor_mps = 0.35,
   moving_away_distance_margin_m = 1.0,
   moving_away_speed_gate_mps = 0.25,
@@ -113,6 +115,8 @@ local PROFILES = {
     buffer_settle_forward_speed_mps = 0.6,
     buffer_settle_forward_throttle_limit = 0.04,
     buffer_settle_forward_max_longitudinal_m = 6.0,
+    buffer_settle_forward_deadlock_max_longitudinal_m = 12.0,
+    buffer_settle_forward_deadlock_speed_mps = 0.15,
     buffer_settle_speed_mps = 0,
     buffer_settle_throttle_limit = 0,
     buffer_settle_max_longitudinal_m = 0,
@@ -147,6 +151,8 @@ local PROFILES = {
     buffer_settle_forward_speed_mps = 0.35,
     buffer_settle_forward_throttle_limit = 0.04,
     buffer_settle_forward_max_longitudinal_m = 3.0,
+    buffer_settle_forward_deadlock_max_longitudinal_m = 12.0,
+    buffer_settle_forward_deadlock_speed_mps = 0.15,
     buffer_settle_speed_mps = 0.35,
     buffer_settle_throttle_limit = 0.04,
     buffer_settle_max_longitudinal_m = 3.0,
@@ -938,6 +944,48 @@ local function forward_buffer_settle_block_reason(
   return nil
 end
 
+local function forward_deadlock_recovery_block_reason(
+  profile,
+  state,
+  longitudinal_error_m,
+  lateral_error_m,
+  speed_toward_target_mps,
+  axis_speed_mps,
+  stop_context
+)
+  if not stop_context or not stop_context.in_no_reverse_approach then
+    return "outside_no_reverse_approach"
+  end
+  if stop_context.must_stop_now then
+    return "must_stop_now"
+  end
+  if longitudinal_error_m <= DEFAULTS.arrival_longitudinal_m then
+    return longitudinal_error_m < 0 and "target_behind" or "inside_arrival_window"
+  end
+  if longitudinal_error_m > (profile.buffer_settle_forward_deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m) then
+    return "beyond_deadlock_forward_window"
+  end
+  if lateral_error_m > DEFAULTS.near_target_correction_lateral_m then
+    return "lateral_error_too_large"
+  end
+  if state.stop_first_active or state.near_target_correction_active then
+    return "higher_priority_terminal_recovery"
+  end
+  if state.moving_away_confidence >= DEFAULTS.moving_away_confidence_threshold then
+    return "moving_away_risk"
+  end
+  if math.abs(speed_toward_target_mps) > (profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps) then
+    return "speed_too_high"
+  end
+  if math.abs(axis_speed_mps) > math.max(
+    profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps,
+    DEFAULTS.arrival_speed_mps * 2
+  ) then
+    return "axis_speed_too_high"
+  end
+  return nil
+end
+
 local function reverse_buffer_settle_block_reason(
   profile,
   state,
@@ -1071,8 +1119,13 @@ end
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context, profile, moving_away_brake_allowed)
   profile = profile or get_profile()
   local overspeed = speed_toward_target_mps - target_speed_mps
-  local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
   local must_stop_now = stop_context and stop_context.must_stop_now
+  local brake_hold_allowed = state.guidance_mode == "stop"
+    or must_stop_now
+    or (stop_context and (stop_context.in_approach_stop or stop_context.in_no_reverse_approach))
+  local must_hold_brake = brake_hold_allowed
+    and state.brake_release_until
+    and uptime() < state.brake_release_until
   if moving_away_brake_allowed == nil then
     moving_away_brake_allowed = should_force_moving_away_brake(state, speed_toward_target_mps)
   end
@@ -2990,18 +3043,44 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             axis_speed_mps,
             stop_context
           )
-          terminal_recovery_block = reverse_block or "eligible"
-          terminal_recovery_eligible = reverse_block == nil
-          if not reverse_block then
-            buffer_settle_mode = "reverse"
-            buffer_settle_eligible = true
-            buffer_settle_block_reason = "eligible"
-            desired_reverser = -1
-            target_speed_mps = math.min(target_speed_mps, profile.buffer_settle_reverse_speed_mps)
+          if reverse_block == "target_ahead" then
+            local deadlock_forward_block = forward_deadlock_recovery_block_reason(
+              profile,
+              state,
+              stop_longitudinal_error_m,
+              stop_lateral_error_m,
+              speed_toward_target_mps,
+              axis_speed_mps,
+              stop_context
+            )
+            if not deadlock_forward_block then
+              buffer_settle_mode = "forward"
+              buffer_settle_eligible = true
+              buffer_settle_block_reason = "deadlock_forward_recovery"
+              desired_reverser = 1
+              target_speed_mps = math.min(
+                target_speed_mps,
+                profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps
+              )
+            else
+              terminal_recovery_block = deadlock_forward_block
+              terminal_recovery_eligible = false
+              buffer_settle_block_reason = deadlock_forward_block
+            end
           else
-            buffer_settle_block_reason = forward_block
-            if reverse_block ~= "profile_disabled" or profile.name == "fast" then
-              buffer_settle_block_reason = reverse_block
+            terminal_recovery_block = reverse_block or "eligible"
+            terminal_recovery_eligible = reverse_block == nil
+            if not reverse_block then
+              buffer_settle_mode = "reverse"
+              buffer_settle_eligible = true
+              buffer_settle_block_reason = "eligible"
+              desired_reverser = -1
+              target_speed_mps = math.min(target_speed_mps, profile.buffer_settle_reverse_speed_mps)
+            else
+              buffer_settle_block_reason = forward_block
+              if reverse_block ~= "profile_disabled" or profile.name == "fast" then
+                buffer_settle_block_reason = reverse_block
+              end
             end
           end
         end
@@ -3453,9 +3532,18 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             state.reason = "overspeed"
             brake = compute_brake_command(overspeed, DEFAULTS.min_brake_command)
           end
+          local allow_brake_release_hold = state.guidance_mode == "stop"
+            or stop_context.must_stop_now
+            or stop_context.in_approach_stop
+            or stop_context.in_no_reverse_approach
+
           if brake < DEFAULTS.brake_deadband then
             brake = 0
-            state.brake_release_until = now + DEFAULTS.brake_release_hold_s
+            if allow_brake_release_hold then
+              state.brake_release_until = now + DEFAULTS.brake_release_hold_s
+            else
+              state.brake_release_until = nil
+            end
           else
             state.brake_release_until = nil
           end

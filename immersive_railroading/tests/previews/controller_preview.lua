@@ -354,6 +354,18 @@ local function preview_buffer_settle_mode(profile_name, terminal_success_stop_ok
     and math.abs(geometry.axis_speed_mps) <= math.max(profile.buffer_settle_forward_speed_mps or 0, DEFAULTS.arrival_speed_mps * 2) then
     return "forward"
   end
+  if stop_context.in_no_reverse_approach
+    and not stop_context.must_stop_now
+    and geometry.stop_longitudinal_error_m > (profile.buffer_settle_forward_max_longitudinal_m or 0)
+    and geometry.stop_longitudinal_error_m <= (profile.buffer_settle_forward_deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
+    and geometry.stop_lateral_error_m <= DEFAULTS.near_target_correction_lateral_m
+    and math.abs(geometry.speed_toward_target_mps) <= (profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps)
+    and math.abs(geometry.axis_speed_mps) <= math.max(
+      profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps,
+      DEFAULTS.arrival_speed_mps * 2
+    ) then
+    return "forward"
+  end
   if profile.name == "fast"
     and stop_context.in_no_reverse_approach
     and not stop_context.must_stop_now
@@ -414,8 +426,13 @@ end
 local function select_motion_mode(state, speed_toward_target_mps, target_speed_mps, distance_to_target_m, stop_context)
   local profile = get_profile(state.profile_name)
   local overspeed = speed_toward_target_mps - target_speed_mps
-  local must_hold_brake = state.brake_release_until and uptime() < state.brake_release_until
   local stop_now_flag = stop_context and stop_context.must_stop_now
+  local brake_hold_allowed = state.guidance_mode == "stop"
+    or stop_now_flag
+    or (stop_context and (stop_context.in_approach_stop or stop_context.in_no_reverse_approach))
+  local must_hold_brake = brake_hold_allowed
+    and state.brake_release_until
+    and uptime() < state.brake_release_until
 
   if state.buffer_settle_mode and state.buffer_settle_mode ~= "none" and not stop_now_flag then
     return "drive"
@@ -708,8 +725,34 @@ assert(
   "active near-target correction must be able to leave brake mode from a near-stop state"
 )
 assert(
-  select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "conservative", brake_release_until = 120}, 0.02, 0.4, 20.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
+  select_motion_mode({
+    mode = "brake",
+    guidance_mode = "stop",
+    near_target_correction_active = false,
+    profile_name = "conservative",
+    brake_release_until = 120,
+  }, 0.02, 0.4, 20.0, {must_stop_now = false, in_no_reverse_approach = true, in_approach_stop = false}) == "brake",
   "brake-release hold should keep the preview in brake mode until the timer expires"
+)
+assert(
+  select_motion_mode({
+    mode = "brake",
+    guidance_mode = "route",
+    near_target_correction_active = false,
+    profile_name = "fast",
+    brake_release_until = 120,
+  }, 0.0, 1.41, 8.57, {must_stop_now = false, in_no_reverse_approach = false, in_approach_stop = false}) ~= "brake",
+  "route-guidance overspeed fallback must not deadlock on brake-release hold when the brake command has already dropped to zero"
+)
+assert(
+  select_motion_mode({
+    mode = "brake",
+    guidance_mode = "stop",
+    near_target_correction_active = false,
+    profile_name = "fast",
+    brake_release_until = 120,
+  }, 0.0, 1.41, 4.04, {must_stop_now = false, in_no_reverse_approach = true, in_approach_stop = false}) == "brake",
+  "stop-guidance no-reverse hold must still honor brake-release hold in the true terminal stop phase"
 )
 assert(
   select_motion_mode({mode = "brake", near_target_correction_active = false, profile_name = "fast"}, 0.02, 0.8, 3.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
@@ -816,13 +859,30 @@ assert(
     {in_no_reverse_approach = true, must_stop_now = false},
     {
       raw_desired_reverser = 1,
-      stop_longitudinal_error_m = 5.0,
+      stop_longitudinal_error_m = 3.94,
+      stop_lateral_error_m = 0.98,
+      speed_toward_target_mps = 0.0,
+      axis_speed_mps = 0.0,
+    }
+  ) == "forward",
+  "log20-style target-ahead terminal stall should enter deadlock-forward recovery"
+)
+assert(
+  preview_buffer_settle_mode(
+    "fast",
+    false,
+    false,
+    {stop_first_active = false, near_target_correction_active = false},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      raw_desired_reverser = 1,
+      stop_longitudinal_error_m = 12.5,
       stop_lateral_error_m = 0.4,
       speed_toward_target_mps = 0.03,
       axis_speed_mps = 0.03,
     }
   ) == "none",
-  "fast profile should not reuse the conservative-only forward settle corridor for the same long undershoot"
+  "fast profile should still reject undershoots beyond the deadlock-forward corridor"
 )
 assert(
   select_motion_mode({mode = "brake", near_target_correction_active = false, buffer_settle_mode = "forward", final_forward_crawl = false, profile_name = "conservative"}, 0.03, 0.6, 21.08, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
