@@ -2066,7 +2066,37 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
             state.reason = "near_target_correction"
           end
 
+          if leg.mode == "terminal" and state.guidance_mode == "route" then
+            if buffer_target_speed_mps > 0 then
+              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
+              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
+              if state.reason == "speed_tracking" then
+                state.reason = "buffer_approach"
+              end
+            end
+          end
+
+          if leg.mode == "terminal"
+            and state.guidance_mode == "route"
+            and buffer_target_speed_mps > 0
+            and state.stop_guidance_block_reason == "outside_capture_window"
+            and overspeed < 0
+            and not terminal_buffer_brake_active
+            and not stop_context.in_no_reverse_approach then
+            terminal_progress_floor_throttle = terminal_buffer_progress_floor(
+              profile,
+              speed_toward_target_mps,
+              buffer_target_speed_mps,
+              throttle_limit
+            )
+          else
+            terminal_progress_floor_throttle = nil
+          end
+
           throttle = clamp(effort, 0, throttle_limit)
+          if terminal_progress_floor_throttle then
+            throttle = math.max(throttle, terminal_progress_floor_throttle)
+          end
           if state.final_forward_crawl
             and throttle_limit > 0
             and longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
