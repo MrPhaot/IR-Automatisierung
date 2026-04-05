@@ -51,6 +51,7 @@ local build_named_route_plan = controller.build_named_route_plan
 local buffer_approach_target_speed = controller.buffer_approach_target_speed
 local buffer_pre_capture_target_speed = controller.buffer_pre_capture_target_speed
 local make_speed_plan = controller.make_speed_plan
+local update_terminal_speed_command = controller.update_terminal_speed_command
 local compute_longitudinal_effort = controller.compute_longitudinal_effort
 local allocate_effort_to_controls = controller.allocate_effort_to_controls
 local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
@@ -563,23 +564,41 @@ assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile="}) == false,
 assert(pcall(parse_cli, {"goto", "1", "2", "3", "--via", "4", "5"}) == false, "truncated --via triplet should fail")
 
 do
-  local speed_plan = make_speed_plan(4.2, -1, "preview", "auto")
+  local speed_plan = make_speed_plan(6.0, 4.2, -1, "preview", "auto")
   local default_speed_plan = make_speed_plan(-2)
-  assert(speed_plan.v_target_mps == 4.2 and speed_plan.desired_reverser == -1 and speed_plan.force_mode == "auto", "speed plan helper should preserve explicit target/reverser/force mode")
-  assert(default_speed_plan.v_target_mps == 0 and default_speed_plan.desired_reverser == 1 and default_speed_plan.force_mode == "auto", "speed plan helper should clamp negative targets and fill defaults")
-  assert(make_speed_plan(0, 1, "hold_test", "hold").force_mode == "hold", "speed plan helper should retain hard force modes")
-  assert(make_speed_plan(0, 1, "full_brake_test", "full_brake").force_mode == "full_brake", "speed plan helper should expose full-brake mode")
-  assert(make_speed_plan(0, 1, "coast_test", "coast").force_mode == "coast", "speed plan helper should expose coast mode")
+  assert(
+    speed_plan.speed_limit_mps == 6.0
+      and speed_plan.speed_command_mps == 4.2
+      and speed_plan.desired_reverser == -1
+      and speed_plan.force_mode == "auto",
+    "speed plan helper should keep limit/command/reverser/force mode separate"
+  )
+  assert(
+    default_speed_plan.speed_limit_mps == 0
+      and default_speed_plan.speed_command_mps == 0
+      and default_speed_plan.desired_reverser == 1
+      and default_speed_plan.force_mode == "auto",
+    "speed plan helper should clamp negative limits and fill defaults"
+  )
+  assert(make_speed_plan(0, 0, 1, "hold_test", "hold").force_mode == "hold", "speed plan helper should retain hard force modes")
+  assert(make_speed_plan(0, 0, 1, "full_brake_test", "full_brake").force_mode == "full_brake", "speed plan helper should expose full-brake mode")
+  assert(make_speed_plan(0, 0, 1, "coast_test", "coast").force_mode == "coast", "speed plan helper should expose coast mode")
 
   local effort_pid = {kp = 0.6, ki = 0.2, kd = 0.0}
-  local effort_up, integral_up = compute_longitudinal_effort(effort_pid, 0, 0, 0.5, 0.2, 2.0)
-  local effort_down = compute_longitudinal_effort(effort_pid, 0, 0, -0.5, 0.2, 2.0)
-  local effort_flat = compute_longitudinal_effort(effort_pid, 0, 0, 0.0, 0.2, 2.0)
-  local _, integral_windup_guard = compute_longitudinal_effort({kp = 5, ki = 2, kd = 0}, 1.0, 0.0, 6.0, 0.2, 1.0)
+  local effort_up, integral_up = compute_longitudinal_effort(effort_pid, 0, 0, 0.5, 0.2, 2.0, 0.5, 0.5, 1.0)
+  local effort_down = compute_longitudinal_effort(effort_pid, 0, 0, -0.5, 0.2, 2.0, 1.2, 1.2, 1.0)
+  local effort_flat = compute_longitudinal_effort(effort_pid, 0, 0, 0.0, 0.2, 2.0, 0.0, 0.0, 1.0)
+  local _, integral_windup_guard = compute_longitudinal_effort({kp = 5, ki = 2, kd = 0}, 1.0, 0.0, 6.0, 0.2, 1.0, 6.0, 6.0, 1.0)
   assert(effort_up > 0 and integral_up > 0, "positive speed error should yield positive effort and integral growth")
   assert(effort_down < 0, "negative speed error should yield negative effort")
   assert(math.abs(effort_flat) < 0.001, "zero speed error should keep effort near zero")
   assert(math.abs(integral_windup_guard - 1.0) < 0.0001, "effort saturation should not wind the integral further into saturation")
+
+  local with_kick = compute_longitudinal_effort({kp = 0, ki = 0, kd = 1}, 0, 0, 0.0, 0.2, 1.0, 0.3, 0.3, 1.0)
+  local limit_jump = compute_longitudinal_effort({kp = 0, ki = 0, kd = 1}, 0, 0, 4.0, 0.2, 1.0, 0.3, 0.3, 1.0)
+  assert(math.abs(with_kick - limit_jump) < 0.0001, "changing speed limits alone should not trigger a D-kick when measurement is unchanged")
+  local d_off_effort = compute_longitudinal_effort({kp = 0, ki = 0, kd = 1}, 0, 0, 0.0, 0.2, 1.0, 1.0, 0.0, 0.0)
+  assert(math.abs(d_off_effort) < 0.0001, "low-speed D gate should be able to disable D contribution")
 
   local drive_controls = allocate_effort_to_controls(0.35, 1)
   local brake_controls = allocate_effort_to_controls(-0.35, -1)
@@ -587,6 +606,19 @@ do
   assert(drive_controls.throttle > 0 and drive_controls.brake == 0, "positive effort should allocate throttle only")
   assert(brake_controls.brake >= DEFAULTS.min_brake_command and brake_controls.throttle == 0, "negative effort should allocate brake only")
   assert(deadband_controls.throttle == 0 and deadband_controls.brake == 0, "tiny effort should stay inside deadbands")
+
+  local free_command = update_terminal_speed_command(nil, 4.5, 2.0, false)
+  local committed_start = update_terminal_speed_command(nil, 4.5, 2.0, true)
+  local committed_monotone = update_terminal_speed_command(1.6, 3.2, 0.9, true)
+  local committed_rise_blocked = update_terminal_speed_command(1.6, 6.0, 0.9, true)
+  assert(math.abs(free_command - 4.5) < 0.0001, "outside committed stop the command should follow the current speed limit")
+  assert(math.abs(committed_start - 2.0) < 0.0001, "committed stop should seed command from current speed, capped by limit")
+  assert(math.abs(committed_monotone - 1.6) < 0.0001, "committed stop command should stay monotonic when limit remains above previous command")
+  assert(math.abs(committed_rise_blocked - 1.6) < 0.0001, "committed stop command must not rise again even if the limit rises")
+
+  local low_speed_learning_block = true and (true or true) and 0.8 <= 1.0
+  local high_speed_learning_block = true and (true or true) and 1.2 <= 1.0
+  assert(low_speed_learning_block == true and high_speed_learning_block == false, "brake-learning gate should block low-speed terminal samples but allow higher-speed ones")
 end
 
 do

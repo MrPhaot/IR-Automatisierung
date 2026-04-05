@@ -1232,24 +1232,59 @@ local function compute_brake_command(overspeed, minimum)
   return brake
 end
 
-local function make_speed_plan(v_target_mps, desired_reverser, reason, force_mode)
+local function make_speed_plan(speed_limit_mps, speed_command_mps, desired_reverser, reason, force_mode)
+  local limit_mps = math.max(speed_limit_mps or 0, 0)
+  local command_mps = math.max(speed_command_mps or limit_mps, 0)
+  command_mps = math.min(command_mps, limit_mps)
   return {
-    v_target_mps = math.max(v_target_mps or 0, 0),
+    speed_limit_mps = limit_mps,
+    speed_command_mps = command_mps,
+    -- Backward-compatible alias while downstream tools/log parsers migrate.
+    v_target_mps = command_mps,
     desired_reverser = desired_reverser or 1,
     reason = reason or "speed_tracking",
     force_mode = force_mode or "auto", -- auto | coast | hold | full_brake
   }
 end
 
-local function compute_longitudinal_effort(pid, integral, previous_error, speed_error, dt_s, integral_limit)
+local function update_terminal_speed_command(previous_cmd_mps, speed_limit_mps, speed_toward_target_mps, committed_stop)
+  speed_limit_mps = math.max(speed_limit_mps or 0, 0)
+  if not committed_stop then
+    return speed_limit_mps
+  end
+
+  local current_speed_mps = math.max(speed_toward_target_mps or 0, 0)
+  local seeded_command_mps = math.min(current_speed_mps, speed_limit_mps)
+  if previous_cmd_mps == nil then
+    return seeded_command_mps
+  end
+  return math.min(math.max(previous_cmd_mps, 0), speed_limit_mps)
+end
+
+local function compute_longitudinal_effort(
+  pid,
+  integral,
+  previous_error,
+  speed_error,
+  dt_s,
+  integral_limit,
+  actual_speed_mps,
+  previous_actual_speed_mps,
+  derivative_gain_scale
+)
   integral = integral or 0
   previous_error = previous_error or 0
   integral_limit = math.max(integral_limit or 0, 0)
   dt_s = math.max(dt_s or DEFAULTS.loop_dt_s, 0.001)
+  derivative_gain_scale = derivative_gain_scale == nil and 1 or derivative_gain_scale
 
   local next_integral = clamp(integral + speed_error * dt_s, -integral_limit, integral_limit)
-  local derivative = (speed_error - previous_error) / dt_s
-  local raw_effort = pid.kp * speed_error + pid.ki * next_integral + pid.kd * derivative
+  local prev_actual_speed_mps = previous_actual_speed_mps
+  if prev_actual_speed_mps == nil then
+    prev_actual_speed_mps = actual_speed_mps
+  end
+  local d_meas = -((actual_speed_mps or 0) - (prev_actual_speed_mps or 0)) / dt_s
+  local raw_effort = pid.kp * speed_error + pid.ki * next_integral + pid.kd * d_meas * derivative_gain_scale
   local effort = clamp(raw_effort, -1, 1)
 
   -- Anti-windup: keep the integrator from piling up further into saturation.
@@ -1259,7 +1294,7 @@ local function compute_longitudinal_effort(pid, integral, previous_error, speed_
     end
   end
 
-  return effort, next_integral, speed_error
+  return effort, next_integral, speed_error, d_meas
 end
 
 local function allocate_effort_to_controls(effort_cmd, reverser)
@@ -1504,6 +1539,10 @@ local function begin_leg(runtime_context)
     stop_guidance_ready = false,
     stop_guidance_block_reason = "inactive",
     terminal_brake_snapshot_mps2 = nil,
+    terminal_pid = nil,
+    terminal_speed_command_mps = nil,
+    terminal_speed_commit_active = false,
+    d_term_active = "false",
     terminal_stop_capture_speed_limit_mps = 0,
     terminal_entry_alignment = 0,
     terminal_success_stop_ok = false,
@@ -2863,6 +2902,9 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       state.stop_guidance_ready = false
       state.stop_guidance_block_reason = "non_terminal_leg"
       state.terminal_brake_snapshot_mps2 = nil
+      state.terminal_pid = nil
+      state.terminal_speed_command_mps = nil
+      state.terminal_speed_commit_active = false
       state.terminal_stop_capture_speed_limit_mps = 0
       state.terminal_entry_alignment = 0
       state.terminal_success_stop_ok = false
@@ -2966,7 +3008,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local stop_cap_brake_model = leg.mode == "terminal"
       and {full_service_mps2 = terminal_brake_snapshot_mps2}
       or brake_model
-    local pid = derive_pid(characteristics, brake_model)
+    local pid = nil
     local target_speed_mps = leg.mode == "terminal"
       and stop_speed_cap(
         state.guidance_mode == "stop" and distance_to_stop_target_m or distance_to_physical_target_m,
@@ -3284,8 +3326,33 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     buffer_settle_active = buffer_settle_mode ~= "none"
     buffer_settle_reason = buffer_settle_active and (buffer_settle_mode .. "_settle") or buffer_settle_block_reason
 
-    local speed_error = target_speed_mps - speed_toward_target_mps
-    local overspeed = speed_toward_target_mps - target_speed_mps
+    local speed_limit_mps = target_speed_mps
+    local committed_stop = leg.mode == "terminal"
+      and (state.guidance_mode == "stop" or stop_context.in_no_reverse_approach)
+    local speed_command_mps = update_terminal_speed_command(
+      state.terminal_speed_command_mps,
+      speed_limit_mps,
+      speed_toward_target_mps,
+      committed_stop
+    )
+    if committed_stop then
+      state.terminal_speed_commit_active = true
+      state.terminal_speed_command_mps = speed_command_mps
+      if not state.terminal_pid then
+        state.terminal_pid = derive_pid(characteristics, {
+          full_service_mps2 = state.terminal_brake_snapshot_mps2 or brake_model.full_service_mps2,
+        })
+      end
+      pid = state.terminal_pid
+    else
+      state.terminal_speed_commit_active = false
+      state.terminal_speed_command_mps = nil
+      state.terminal_pid = nil
+      pid = derive_pid(characteristics, brake_model)
+    end
+
+    local speed_error = speed_command_mps - speed_toward_target_mps
+    local overspeed = speed_toward_target_mps - speed_command_mps
     local switching_reverser = desired_reverser ~= state.active_reverser
 
     if leg.mode == "terminal" then
@@ -3393,6 +3460,9 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.buffer_settle_eligible = false
         state.buffer_settle_block_reason = "route_guidance_active"
         state.final_forward_crawl = false
+        state.terminal_speed_command_mps = nil
+        state.terminal_speed_commit_active = false
+        state.terminal_pid = nil
         state.stop_first_active = false
         state.stopped_after_overshoot = false
         state.halted_near_target_since = nil
@@ -3430,14 +3500,15 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       state.terminal_deadlock_recovery_active = false
     end
 
-    local speed_plan = make_speed_plan(target_speed_mps, desired_reverser, "speed_tracking", "auto")
+    local speed_plan = make_speed_plan(speed_limit_mps, speed_command_mps, desired_reverser, "speed_tracking", "auto")
     local effort_cmd = 0
     local allocated_throttle = 0
     local allocated_brake = 0
+    state.d_term_active = "false"
     local control
     if hold then
       runtime_context.settled_since = runtime_context.settled_since or now
-      speed_plan = make_speed_plan(target_speed_mps, desired_reverser, terminal_limit_hold and "arrived_within_v1_limit"
+      speed_plan = make_speed_plan(speed_limit_mps, speed_command_mps, desired_reverser, terminal_limit_hold and "arrived_within_v1_limit"
         or (near_target_hold and "near_target_arrival" or "arrival_window"), "hold")
       state.mode = "hold"
       state.phase = "hold"
@@ -3505,7 +3576,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.buffer_settle_eligible = false
         state.buffer_settle_block_reason = "near_target_limit"
         state.final_forward_crawl = false
-        speed_plan = make_speed_plan(target_speed_mps, state.active_reverser, "near_target_limit", "hold")
+        speed_plan = make_speed_plan(speed_limit_mps, 0, state.active_reverser, "near_target_limit", "hold")
         state.mode = "hold"
         state.phase = "hold"
         state.reason = speed_plan.reason
@@ -3586,7 +3657,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       end
 
       if speed_plan_force_mode == "auto"
-        and target_speed_mps <= DEFAULTS.arrival_speed_mps * 2
+        and speed_command_mps <= DEFAULTS.arrival_speed_mps * 2
         and math.abs(speed_error) <= DEFAULTS.arrival_speed_mps then
         speed_plan_force_mode = "coast"
         if planner_reason == "speed_tracking" then
@@ -3595,7 +3666,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       end
 
       speed_plan = make_speed_plan(
-        target_speed_mps,
+        speed_limit_mps,
+        speed_command_mps,
         speed_plan_desired_reverser,
         planner_reason,
         speed_plan_force_mode
@@ -3626,16 +3698,23 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         if stop_context.in_approach_stop or stop_context.in_no_reverse_approach then
           runtime_context.integral = runtime_context.integral * profile.end_phase_integral_decay
         end
-        local integral_limit = math.max(speed_plan.v_target_mps * 2, characteristics.cruise_mps)
+        local low_speed_stop_phase = speed_plan.speed_command_mps <= 1.0 or state.guidance_mode == "stop"
+        local derivative_gain_scale = low_speed_stop_phase and 0 or 1
+        local d_term_active = derivative_gain_scale > 0 and "true" or "false"
+        local integral_limit = math.max(speed_plan.speed_command_mps * 2, characteristics.cruise_mps)
         effort_cmd, runtime_context.integral = compute_longitudinal_effort(
           pid,
           runtime_context.integral,
           runtime_context.previous_error,
           speed_error,
           dt_s,
-          integral_limit
+          integral_limit,
+          speed_toward_target_mps,
+          runtime_context.previous_speed_toward_target_mps,
+          derivative_gain_scale
         )
         control = allocate_effort_to_controls(effort_cmd, speed_plan.desired_reverser)
+        state.d_term_active = d_term_active
         if control.brake > 0 then
           state.mode = "brake"
         elseif control.throttle > 0 then
@@ -3643,6 +3722,10 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         else
           state.mode = "coast"
         end
+      end
+
+      if speed_plan.force_mode ~= "auto" then
+        state.d_term_active = "false"
       end
 
       if state.phase == "reverse_launch" and math.abs(axis_speed_mps) >= DEFAULTS.axis_lock_speed_mps then
@@ -3656,7 +3739,12 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       end
     end
 
-    if runtime_context.previous_time and runtime_context.previous_speed_toward_target_mps > 0 then
+    local low_speed_terminal_brake_learning_block = leg.mode == "terminal"
+      and (state.guidance_mode == "stop" or stop_context.in_no_reverse_approach)
+      and math.abs(speed_toward_target_mps) <= 1.0
+    if runtime_context.previous_time
+      and runtime_context.previous_speed_toward_target_mps > 0
+      and not low_speed_terminal_brake_learning_block then
       local observed_decel = math.max((runtime_context.previous_speed_toward_target_mps - speed_toward_target_mps) / dt_s, 0)
       if runtime_context.last_control.brake >= DEFAULTS.brake_learning_min_cmd
         and runtime_context.last_control.throttle <= DEFAULTS.throttle_deadband
@@ -3700,7 +3788,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s speed_plan_target_mps=%.2f speed_plan_force_mode=%s effort_cmd=%.3f allocated_throttle=%.2f allocated_brake=%.2f overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s speed_plan_limit_mps=%.2f speed_plan_command_mps=%.2f speed_plan_target_mps=%.2f speed_plan_force_mode=%s terminal_speed_commit_active=%s d_term_active=%s effort_cmd=%.3f allocated_throttle=%.2f allocated_brake=%.2f overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
@@ -3784,9 +3872,13 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         speed_toward_target_mps,
         axis_speed_mps,
         motion_axis_speed_mps,
-        target_speed_mps,
+        speed_limit_mps,
+        speed_plan.speed_limit_mps,
+        speed_plan.speed_command_mps,
         speed_plan.v_target_mps,
         speed_plan.force_mode,
+        tostring(state.terminal_speed_commit_active),
+        state.d_term_active,
         effort_cmd,
         allocated_throttle,
         allocated_brake,
@@ -4000,6 +4092,7 @@ local exports = {
   buffer_approach_target_speed = buffer_approach_target_speed,
   buffer_pre_capture_target_speed = buffer_pre_capture_target_speed,
   make_speed_plan = make_speed_plan,
+  update_terminal_speed_command = update_terminal_speed_command,
   compute_longitudinal_effort = compute_longitudinal_effort,
   allocate_effort_to_controls = allocate_effort_to_controls,
   terminal_buffer_progress_floor = terminal_buffer_progress_floor,
