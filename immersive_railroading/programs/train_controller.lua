@@ -1318,6 +1318,44 @@ local function allocate_effort_to_controls(effort_cmd, reverser)
   }
 end
 
+local function limit_effort_for_phase(effort_cmd, leg_mode, committed_stop, speed_command_mps, distance_to_target_m)
+  local max_drive = 1.0
+  local max_brake = 1.0
+  if leg_mode == "terminal" then
+    max_drive = 0.30
+    max_brake = 1.0
+    if committed_stop then
+      max_drive = 0.18
+      max_brake = 0.85
+    end
+    if (speed_command_mps or 0) <= 1.0 or (distance_to_target_m or math.huge) <= 3.0 then
+      max_drive = math.min(max_drive, 0.10)
+      max_brake = math.min(max_brake, 0.70)
+    end
+  end
+
+  if effort_cmd >= 0 then
+    return math.min(effort_cmd, max_drive)
+  end
+  return -math.min(-effort_cmd, max_brake)
+end
+
+local function slew_limit_effort(previous_effort_cmd, target_effort_cmd, dt_s, max_step_per_s)
+  local previous_cmd = previous_effort_cmd or 0
+  local step_limit = math.max((max_step_per_s or 0) * math.max(dt_s or DEFAULTS.loop_dt_s, 0.001), 0)
+  return previous_cmd + clamp(target_effort_cmd - previous_cmd, -step_limit, step_limit)
+end
+
+local function effort_sign(value)
+  if value > DEFAULTS.throttle_deadband then
+    return 1
+  end
+  if value < -DEFAULTS.brake_deadband then
+    return -1
+  end
+  return 0
+end
+
 local function print_table(title, value, indent, visited, logger)
   indent = indent or ""
   visited = visited or {}
@@ -1543,6 +1581,10 @@ local function begin_leg(runtime_context)
     terminal_speed_command_mps = nil,
     terminal_speed_commit_active = false,
     d_term_active = "false",
+    controller_speed_mps = 0,
+    previous_controller_speed_mps = 0,
+    previous_effort_cmd = 0,
+    previous_force_mode = nil,
     terminal_stop_capture_speed_limit_mps = 0,
     terminal_entry_alignment = 0,
     terminal_success_stop_ok = false,
@@ -3326,6 +3368,14 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     buffer_settle_active = buffer_settle_mode ~= "none"
     buffer_settle_reason = buffer_settle_active and (buffer_settle_mode .. "_settle") or buffer_settle_block_reason
 
+    state.previous_controller_speed_mps = state.controller_speed_mps
+    state.controller_speed_mps = ema(
+      state.controller_speed_mps,
+      speed_toward_target_mps,
+      DEFAULTS.speed_filter_memory_s,
+      dt_s
+    ) or speed_toward_target_mps
+
     local speed_limit_mps = target_speed_mps
     local committed_stop = leg.mode == "terminal"
       and (state.guidance_mode == "stop" or stop_context.in_no_reverse_approach)
@@ -3351,8 +3401,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       pid = derive_pid(characteristics, brake_model)
     end
 
-    local speed_error = speed_command_mps - speed_toward_target_mps
-    local overspeed = speed_toward_target_mps - speed_command_mps
+    local speed_error = speed_command_mps - state.controller_speed_mps
+    local overspeed = state.controller_speed_mps - speed_command_mps
     local switching_reverser = desired_reverser ~= state.active_reverser
 
     if leg.mode == "terminal" then
@@ -3675,9 +3725,14 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       state.active_reverser = speed_plan.desired_reverser
       state.reason = speed_plan.reason
       state.brake_release_until = nil
+      if state.previous_force_mode and state.previous_force_mode ~= speed_plan.force_mode then
+        runtime_context.integral = 0
+        state.previous_effort_cmd = 0
+      end
 
       if speed_plan.force_mode == "full_brake" then
         runtime_context.integral = 0
+        state.previous_effort_cmd = 0
         control = {
           throttle = 0,
           reverser = speed_plan.desired_reverser,
@@ -3687,6 +3742,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.mode = "brake"
       elseif speed_plan.force_mode == "coast" then
         runtime_context.integral = 0
+        state.previous_effort_cmd = 0
         control = {
           throttle = 0,
           reverser = speed_plan.desired_reverser,
@@ -3698,21 +3754,52 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         if stop_context.in_approach_stop or stop_context.in_no_reverse_approach then
           runtime_context.integral = runtime_context.integral * profile.end_phase_integral_decay
         end
-        local low_speed_stop_phase = speed_plan.speed_command_mps <= 1.0 or state.guidance_mode == "stop"
-        local derivative_gain_scale = low_speed_stop_phase and 0 or 1
+        local committed_stop = stop_context.in_no_reverse_approach or state.guidance_mode == "stop"
+        local derivative_gain_scale = leg.mode == "terminal" and 0 or 1
         local d_term_active = derivative_gain_scale > 0 and "true" or "false"
         local integral_limit = math.max(speed_plan.speed_command_mps * 2, characteristics.cruise_mps)
-        effort_cmd, runtime_context.integral = compute_longitudinal_effort(
+        if leg.mode == "terminal" then
+          if committed_stop then
+            integral_limit = math.min(0.75, speed_plan.speed_command_mps)
+          else
+            integral_limit = math.min(1.5, speed_plan.speed_command_mps)
+          end
+        end
+        local raw_effort_cmd = 0
+        raw_effort_cmd, runtime_context.integral = compute_longitudinal_effort(
           pid,
           runtime_context.integral,
           runtime_context.previous_error,
           speed_error,
           dt_s,
           integral_limit,
-          speed_toward_target_mps,
-          runtime_context.previous_speed_toward_target_mps,
+          state.controller_speed_mps,
+          state.previous_controller_speed_mps,
           derivative_gain_scale
         )
+        local phase_limited_effort = limit_effort_for_phase(
+          raw_effort_cmd,
+          leg.mode,
+          committed_stop,
+          speed_plan.speed_command_mps,
+          distance_to_target_m
+        )
+        local slew_rate_per_s = 0.80
+        if leg.mode == "terminal" then
+          slew_rate_per_s = committed_stop and 0.12 or 0.25
+        end
+        effort_cmd = slew_limit_effort(
+          state.previous_effort_cmd,
+          phase_limited_effort,
+          dt_s,
+          slew_rate_per_s
+        )
+        local previous_sign = effort_sign(state.previous_effort_cmd)
+        local current_sign = effort_sign(effort_cmd)
+        if previous_sign ~= 0 and current_sign ~= 0 and previous_sign ~= current_sign then
+          runtime_context.integral = 0
+        end
+        state.previous_effort_cmd = effort_cmd
         control = allocate_effort_to_controls(effort_cmd, speed_plan.desired_reverser)
         state.d_term_active = d_term_active
         if control.brake > 0 then
@@ -3738,6 +3825,11 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.reason = "buffer_approach"
       end
     end
+
+    if speed_plan.force_mode ~= "auto" then
+      state.previous_effort_cmd = 0
+    end
+    state.previous_force_mode = speed_plan.force_mode
 
     local low_speed_terminal_brake_learning_block = leg.mode == "terminal"
       and (state.guidance_mode == "stop" or stop_context.in_no_reverse_approach)
@@ -4095,6 +4187,8 @@ local exports = {
   update_terminal_speed_command = update_terminal_speed_command,
   compute_longitudinal_effort = compute_longitudinal_effort,
   allocate_effort_to_controls = allocate_effort_to_controls,
+  limit_effort_for_phase = limit_effort_for_phase,
+  slew_limit_effort = slew_limit_effort,
   terminal_buffer_progress_floor = terminal_buffer_progress_floor,
   terminal_buffer_required_stop_distance_m = terminal_buffer_required_stop_distance_m,
   can_enter_stop_guidance = can_enter_stop_guidance,
