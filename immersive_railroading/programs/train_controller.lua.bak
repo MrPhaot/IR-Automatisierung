@@ -56,7 +56,7 @@ local DEFAULTS = {
   near_target_correction_lateral_m = 6.0,
   near_target_correction_speed_mps = 0.8,
   near_target_correction_throttle_limit = 0.05,
-  brake_release_hold_s = 1.5,
+  brake_release_hold_s = 0.8,
   overspeed_full_brake_margin_mps = 2.0,
   min_brake_command = 0.08,
   min_axis_speed_mps = 0.35,
@@ -93,7 +93,6 @@ local DEFAULTS = {
 local PROFILES = {
   conservative = {
     name = "conservative",
-    travel_speed_scale = 1.0,
     stop_cap_brake_scale = 0.6,
     required_stop_margin_m = 5.0,
     no_reverse_distance_m = 42.0,
@@ -134,41 +133,40 @@ local PROFILES = {
   },
   fast = {
     name = "fast",
-    travel_speed_scale = 1.15,
-    stop_cap_brake_scale = 1.5,
-    required_stop_margin_m = 2.5,
-    no_reverse_distance_m = 30.0,
-    force_brake_distance_m = 16.0,
-    terminal_recovery_speed_mps = 0.6,
-    terminal_recovery_throttle_limit = 0.12,
-    terminal_recovery_min_throttle = 0.06,
-    terminal_recovery_max_longitudinal_m = 24.0,
-    approach_stop_target_speed_scale = 0.55,
-    approach_stop_throttle_scale = 0.45,
-    terminal_buffer_capture_distance_m = DEFAULTS.terminal_stop_capture_distance_m,
-    terminal_buffer_soft_zone_m = 0,
-    terminal_buffer_entry_speed_cap_mps = DEFAULTS.approach_stop_hold_speed_mps,
-    terminal_buffer_final_speed_cap_mps = DEFAULTS.arrival_speed_mps,
-    terminal_buffer_throttle_limit = DEFAULTS.approach_stop_throttle_limit,
-    terminal_buffer_brake_window_m = 0,
-    terminal_buffer_release_speed_mps = DEFAULTS.approach_stop_hold_speed_mps,
-    terminal_success_buffer_tolerance_m = 1.0,
-    buffer_settle_forward_speed_mps = 0.6,
+    stop_cap_brake_scale = 1.0,
+    required_stop_margin_m = 1.5,
+    no_reverse_distance_m = 22.0,
+    force_brake_distance_m = 10.0,
+    terminal_recovery_speed_mps = 0.5,
+    terminal_recovery_throttle_limit = 0.08,
+    terminal_recovery_min_throttle = 0.04,
+    terminal_recovery_max_longitudinal_m = 6.0,
+    approach_stop_target_speed_scale = 0.9,
+    approach_stop_throttle_scale = 1.0,
+    terminal_buffer_capture_distance_m = 5.0,
+    terminal_buffer_soft_zone_m = 18.0,
+    terminal_buffer_entry_speed_cap_mps = 3.0,
+    terminal_buffer_final_speed_cap_mps = 0.7,
+    terminal_buffer_throttle_limit = 0.02,
+    terminal_buffer_brake_window_m = 12.0,
+    terminal_buffer_release_speed_mps = 1.2,
+    terminal_success_buffer_tolerance_m = DEFAULTS.terminal_success_buffer_tolerance_fast_m,
+    buffer_settle_forward_speed_mps = 0.35,
     buffer_settle_forward_throttle_limit = 0.04,
-    buffer_settle_forward_max_longitudinal_m = 6.0,
+    buffer_settle_forward_max_longitudinal_m = 3.0,
     buffer_settle_forward_deadlock_max_longitudinal_m = 12.0,
-    buffer_settle_forward_deadlock_speed_mps = 0.15,
-    buffer_settle_forward_deadlock_throttle_limit = 0.04,
-    buffer_settle_speed_mps = 0,
-    buffer_settle_throttle_limit = 0,
-    buffer_settle_max_longitudinal_m = 0,
-    buffer_settle_reverse_speed_mps = 0,
-    buffer_settle_reverse_throttle_limit = 0,
-    buffer_settle_reverse_max_overshoot_m = 0,
-    buffer_settle_max_lateral_m = 1.0,
-    launch_throttle_scale = 0.75,
-    brake_exit_margin_mps = 0.2,
-    end_phase_integral_decay = 0.35,
+    buffer_settle_forward_deadlock_speed_mps = 0.35,
+    buffer_settle_forward_deadlock_throttle_limit = 0.06,
+    buffer_settle_speed_mps = 0.35,
+    buffer_settle_throttle_limit = 0.04,
+    buffer_settle_max_longitudinal_m = 3.0,
+    buffer_settle_reverse_speed_mps = 0.3,
+    buffer_settle_reverse_throttle_limit = 0.03,
+    buffer_settle_reverse_max_overshoot_m = 1.75,
+    buffer_settle_max_lateral_m = 0.9,
+    launch_throttle_scale = 1.0,
+    brake_exit_margin_mps = 0.9,
+    end_phase_integral_decay = 0.85,
   },
 }
 
@@ -690,28 +688,6 @@ local function buffer_pre_capture_target_speed(
   return math.sqrt(release_speed_mps * release_speed_mps + 2 * effective_brake_mps2 * braking_runway_m)
 end
 
-local function terminal_buffer_progress_floor(
-  profile,
-  speed_toward_target_mps,
-  buffer_target_speed_mps,
-  throttle_limit
-)
-  if buffer_target_speed_mps <= 0 or throttle_limit <= 0 then
-    return nil
-  end
-
-  local shortfall = math.max(buffer_target_speed_mps - math.max(speed_toward_target_mps, 0), 0)
-  if shortfall <= DEFAULTS.arrival_speed_mps then
-    return nil
-  end
-
-  local profile_scale = (profile and profile.name) == "fast" and 1.0 or 0.6
-  local base_floor = DEFAULTS.throttle_deadband + 0.01
-  local shortfall_ratio = math.min(shortfall / math.max(buffer_target_speed_mps, 0.1), 1.0)
-  local adaptive_floor = base_floor + shortfall_ratio * 0.02 * profile_scale
-  return math.min(adaptive_floor, throttle_limit)
-end
-
 local function terminal_buffer_required_stop_distance_m(speed_mps, brake_snapshot_mps2)
   if speed_mps <= 0 then
     return 0
@@ -1112,12 +1088,6 @@ local function should_fail_terminal_limit(
     )
 end
 
-local function terminal_failure_arming_allowed(buffer_settle_block_reason)
-  -- Keep failure and deadlock-forward recovery serialized so the stall timer
-  -- can complete before terminal failure is allowed to arm.
-  return buffer_settle_block_reason ~= "waiting_for_deadlock_timer"
-end
-
 local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context)
   return stop_context
     and stop_context.in_no_reverse_approach
@@ -1423,10 +1393,6 @@ local function begin_leg(runtime_context)
     startup_guard_active = true,
     progress_speed_mps = 0,
     distance_delta_m = 0,
-    stop_previous_distance_to_target_m = nil,
-    stop_distance_delta_m = 0,
-    stop_progress_speed_mps = 0,
-    stop_progress_initialized = false,
     moving_away_confidence = 0,
     curve_guard_active = false,
     active_reverser = runtime_context.active_reverser or 1,
@@ -2068,37 +2034,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
             state.reason = "near_target_correction"
           end
 
-          if leg.mode == "terminal" and state.guidance_mode == "route" then
-            if buffer_target_speed_mps > 0 then
-              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
-              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
-              if state.reason == "speed_tracking" then
-                state.reason = "buffer_approach"
-              end
-            end
-          end
-
-          if leg.mode == "terminal"
-            and state.guidance_mode == "route"
-            and buffer_target_speed_mps > 0
-            and state.stop_guidance_block_reason == "outside_capture_window"
-            and overspeed < 0
-            and not terminal_buffer_brake_active
-            and not stop_context.in_no_reverse_approach then
-            terminal_progress_floor_throttle = terminal_buffer_progress_floor(
-              profile,
-              speed_toward_target_mps,
-              buffer_target_speed_mps,
-              throttle_limit
-            )
-          else
-            terminal_progress_floor_throttle = nil
-          end
-
           throttle = clamp(effort, 0, throttle_limit)
-          if terminal_progress_floor_throttle then
-            throttle = math.max(throttle, terminal_progress_floor_throttle)
-          end
           if state.final_forward_crawl
             and throttle_limit > 0
             and longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
@@ -2660,7 +2596,6 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local buffer_throttle_limit_active = 0
     local terminal_buffer_brake_active = false
     local terminal_buffer_brake_reason = "inactive"
-    local terminal_progress_floor_throttle = nil
 
     if not state.target_line_axis then
       state.target_line_axis = normalize(to_physical_target) or {x = 1, y = 0, z = 0}
@@ -2745,12 +2680,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           state.guidance_mode = "stop"
           state.progress_speed_mps = 0
           state.distance_delta_m = 0
-          state.stop_previous_distance_to_target_m = distance_to_stop_target_m
-          state.stop_distance_delta_m = 0
-          state.stop_progress_speed_mps = 0
-          state.stop_progress_initialized = true
           state.moving_away_confidence = 0
-          runtime_context.previous_distance_to_target_m = distance_to_physical_target_m
+          runtime_context.previous_distance_to_target_m = distance_to_stop_target_m
           state.stop_guidance_entry = true
           state.stop_guidance_entry_reason = stop_guidance_entry_reason
           state.late_stop_capture = stop_longitudinal_error_m < -DEFAULTS.arrival_longitudinal_m
@@ -2849,28 +2780,6 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local axis_speed_mps = vector_dot(runtime_context.filtered_velocity, target_axis)
     local motion_axis_speed_mps = vector_dot(runtime_context.filtered_velocity, motion_axis)
     local speed_toward_target_mps = motion_axis_speed_mps * desired_reverser
-    if state.guidance_mode == "stop" then
-      local raw_stop_progress_speed_mps = 0
-      if state.stop_progress_initialized and state.stop_previous_distance_to_target_m then
-        raw_stop_progress_speed_mps = (state.stop_previous_distance_to_target_m - distance_to_stop_target_m) / dt_s
-      end
-      state.stop_distance_delta_m = state.stop_previous_distance_to_target_m
-        and (distance_to_stop_target_m - state.stop_previous_distance_to_target_m)
-        or 0
-      state.stop_progress_speed_mps = ema(
-        state.stop_progress_speed_mps,
-        raw_stop_progress_speed_mps,
-        DEFAULTS.distance_progress_memory_s,
-        dt_s
-      ) or raw_stop_progress_speed_mps
-      state.stop_previous_distance_to_target_m = distance_to_stop_target_m
-      state.stop_progress_initialized = true
-    else
-      state.stop_previous_distance_to_target_m = nil
-      state.stop_distance_delta_m = 0
-      state.stop_progress_speed_mps = 0
-      state.stop_progress_initialized = false
-    end
     state.startup_guard_active = ((now - state.started_at) <= DEFAULTS.startup_guard_duration_s)
       and distance_to_target_m <= state.initial_distance_to_target_m + DEFAULTS.startup_guard_distance_margin_m
     state.curve_guard_active = state.axis_alignment < DEFAULTS.curve_guard_alignment
@@ -2943,14 +2852,6 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         buffer_speed_cap_active_mps = math.min(target_speed_mps, buffer_target_speed_mps)
         target_speed_mps = buffer_speed_cap_active_mps
       end
-    end
-
-    -- Apply travel speed scale for pass_through legs only
-    if leg.mode == "pass_through" then
-      target_speed_mps = math.min(
-        target_speed_mps * (profile.travel_speed_scale or 1.0),
-        characteristics.cruise_mps * (profile.travel_speed_scale or 1.0)
-      )
     end
 
     if leg.mode == "terminal" and state.guidance_mode == "route" and profile.name == "fast" then
@@ -3027,7 +2928,6 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and stop_longitudinal_error_m <= (profile.buffer_settle_forward_deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
         and stop_lateral_error_m <= (profile.buffer_settle_max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
         and math.abs(speed_toward_target_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
-        and math.abs(state.stop_progress_speed_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
         and math.abs(axis_speed_mps) <= math.max(DEFAULTS.terminal_deadlock_stall_speed_mps, DEFAULTS.arrival_speed_mps * 0.5)
 
       if target_ahead_stalled then
@@ -3273,8 +3173,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           state.terminal_settle_since = nil
         end
 
-        local terminal_limit_failure = terminal_failure_arming_allowed(buffer_settle_block_reason)
-          and should_fail_terminal_limit(
+        local terminal_limit_failure = should_fail_terminal_limit(
           distance_to_stop_target_m,
           stop_longitudinal_distance_m,
           stop_lateral_error_m,
@@ -3562,12 +3461,25 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             state.reason = "no_reverse_approach"
           end
           if leg.mode == "terminal" and state.guidance_mode == "route" then
+            local capture_base = profile.terminal_buffer_capture_distance_m or DEFAULTS.terminal_stop_capture_distance_m
+            local emergency_threshold = 1.5 * capture_base
             if buffer_target_speed_mps > 0 then
               buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
               throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
               if state.reason == "speed_tracking" then
                 state.reason = "buffer_approach"
               end
+            elseif physical_distance_minus_buffer_m > capture_base and physical_distance_minus_buffer_m <= emergency_threshold then
+              -- Emergency small throttle to break potential stall when just outside capture window
+              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit or DEFAULTS.approach_stop_throttle_limit
+              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
+              if state.reason == "speed_tracking" then
+                state.reason = "buffer_approach"
+              end
+              emit_line(logger, ("emergency_buffer_throttle_active capture_base=%.2f physical_distance_minus_buffer=%.2f"):format(
+                capture_base,
+                physical_distance_minus_buffer_m
+              ))
             end
           end
           if buffer_settle_mode == "forward" then
@@ -3593,27 +3505,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             state.reason = "near_target_correction"
           end
 
-          if leg.mode == "terminal"
-            and state.guidance_mode == "route"
-            and buffer_target_speed_mps > 0
-            and state.stop_guidance_block_reason == "outside_capture_window"
-            and overspeed < 0
-            and not terminal_buffer_brake_active
-            and not stop_context.in_no_reverse_approach then
-            terminal_progress_floor_throttle = terminal_buffer_progress_floor(
-              profile,
-              speed_toward_target_mps,
-              buffer_target_speed_mps,
-              throttle_limit
-            )
-          else
-            terminal_progress_floor_throttle = nil
-          end
-
           throttle = clamp(effort, 0, throttle_limit)
-          if terminal_progress_floor_throttle then
-            throttle = math.max(throttle, terminal_progress_floor_throttle)
-          end
           if buffer_settle_mode == "forward"
             and throttle_limit > 0
             and stop_longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
@@ -3783,7 +3675,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
@@ -3820,9 +3712,6 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.axis_alignment,
         state.distance_delta_m,
         state.progress_speed_mps,
-        state.stop_distance_delta_m or 0,
-        state.stop_progress_speed_mps or 0,
-        tostring(state.stop_progress_initialized),
         state.moving_away_confidence,
         tostring(state.startup_guard_active),
         tostring(state.curve_guard_active),
@@ -3887,7 +3776,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
 
     runtime_context.previous_time = now
     runtime_context.previous_position = position
-    runtime_context.previous_distance_to_target_m = distance_to_physical_target_m
+    runtime_context.previous_distance_to_target_m = distance_to_target_m
     runtime_context.previous_speed_toward_target_mps = speed_toward_target_mps
     runtime_context.previous_error = speed_error
     runtime_context.last_control = control
@@ -4077,12 +3966,10 @@ local exports = {
   execute_route_plan = execute_route_plan,
   buffer_approach_target_speed = buffer_approach_target_speed,
   buffer_pre_capture_target_speed = buffer_pre_capture_target_speed,
-  terminal_buffer_progress_floor = terminal_buffer_progress_floor,
   terminal_buffer_required_stop_distance_m = terminal_buffer_required_stop_distance_m,
   can_enter_stop_guidance = can_enter_stop_guidance,
   is_terminal_success_physical_ok = is_terminal_success_physical_ok,
   is_terminal_success_consistent = is_terminal_success_consistent,
-  terminal_failure_arming_allowed = terminal_failure_arming_allowed,
   should_enter_stop_guidance = should_enter_stop_guidance,
 }
 

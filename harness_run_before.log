@@ -1,0 +1,6 @@
+physical_distance = 10.24
+physical_distance_minus_buffer = 7.24
+buffer_target_speed = 1.745 m/s
+pre_capture_target_speed = 2.611 m/s
+capture_base = 5.00, emergency_threshold = 7.50
+buffer_target_speed active; throttle cap:	0.05

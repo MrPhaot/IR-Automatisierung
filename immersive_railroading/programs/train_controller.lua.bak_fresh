@@ -93,7 +93,6 @@ local DEFAULTS = {
 local PROFILES = {
   conservative = {
     name = "conservative",
-    travel_speed_scale = 1.0,
     stop_cap_brake_scale = 0.6,
     required_stop_margin_m = 5.0,
     no_reverse_distance_m = 42.0,
@@ -134,41 +133,40 @@ local PROFILES = {
   },
   fast = {
     name = "fast",
-    travel_speed_scale = 1.15,
-    stop_cap_brake_scale = 1.5,
-    required_stop_margin_m = 2.5,
-    no_reverse_distance_m = 30.0,
-    force_brake_distance_m = 16.0,
-    terminal_recovery_speed_mps = 0.6,
-    terminal_recovery_throttle_limit = 0.12,
-    terminal_recovery_min_throttle = 0.06,
-    terminal_recovery_max_longitudinal_m = 24.0,
-    approach_stop_target_speed_scale = 0.55,
-    approach_stop_throttle_scale = 0.45,
-    terminal_buffer_capture_distance_m = DEFAULTS.terminal_stop_capture_distance_m,
-    terminal_buffer_soft_zone_m = 0,
-    terminal_buffer_entry_speed_cap_mps = DEFAULTS.approach_stop_hold_speed_mps,
-    terminal_buffer_final_speed_cap_mps = DEFAULTS.arrival_speed_mps,
-    terminal_buffer_throttle_limit = DEFAULTS.approach_stop_throttle_limit,
-    terminal_buffer_brake_window_m = 0,
-    terminal_buffer_release_speed_mps = DEFAULTS.approach_stop_hold_speed_mps,
-    terminal_success_buffer_tolerance_m = 1.0,
-    buffer_settle_forward_speed_mps = 0.6,
+    stop_cap_brake_scale = 1.0,
+    required_stop_margin_m = 1.5,
+    no_reverse_distance_m = 22.0,
+    force_brake_distance_m = 10.0,
+    terminal_recovery_speed_mps = 0.5,
+    terminal_recovery_throttle_limit = 0.08,
+    terminal_recovery_min_throttle = 0.04,
+    terminal_recovery_max_longitudinal_m = 6.0,
+    approach_stop_target_speed_scale = 0.9,
+    approach_stop_throttle_scale = 1.0,
+    terminal_buffer_capture_distance_m = 5.0,
+    terminal_buffer_soft_zone_m = 18.0,
+    terminal_buffer_entry_speed_cap_mps = 3.0,
+    terminal_buffer_final_speed_cap_mps = 0.9,
+    terminal_buffer_throttle_limit = 0.05,
+    terminal_buffer_brake_window_m = 12.0,
+    terminal_buffer_release_speed_mps = 1.2,
+    terminal_success_buffer_tolerance_m = DEFAULTS.terminal_success_buffer_tolerance_fast_m,
+    buffer_settle_forward_speed_mps = 0.35,
     buffer_settle_forward_throttle_limit = 0.04,
-    buffer_settle_forward_max_longitudinal_m = 6.0,
+    buffer_settle_forward_max_longitudinal_m = 3.0,
     buffer_settle_forward_deadlock_max_longitudinal_m = 12.0,
-    buffer_settle_forward_deadlock_speed_mps = 0.15,
-    buffer_settle_forward_deadlock_throttle_limit = 0.04,
-    buffer_settle_speed_mps = 0,
-    buffer_settle_throttle_limit = 0,
-    buffer_settle_max_longitudinal_m = 0,
-    buffer_settle_reverse_speed_mps = 0,
-    buffer_settle_reverse_throttle_limit = 0,
-    buffer_settle_reverse_max_overshoot_m = 0,
-    buffer_settle_max_lateral_m = 1.0,
-    launch_throttle_scale = 0.75,
-    brake_exit_margin_mps = 0.2,
-    end_phase_integral_decay = 0.35,
+    buffer_settle_forward_deadlock_speed_mps = 0.35,
+    buffer_settle_forward_deadlock_throttle_limit = 0.06,
+    buffer_settle_speed_mps = 0.35,
+    buffer_settle_throttle_limit = 0.04,
+    buffer_settle_max_longitudinal_m = 3.0,
+    buffer_settle_reverse_speed_mps = 0.3,
+    buffer_settle_reverse_throttle_limit = 0.03,
+    buffer_settle_reverse_max_overshoot_m = 1.75,
+    buffer_settle_max_lateral_m = 0.9,
+    launch_throttle_scale = 1.0,
+    brake_exit_margin_mps = 0.9,
+    end_phase_integral_decay = 0.85,
   },
 }
 
@@ -2068,37 +2066,7 @@ local function control_loop(remote, target, requested_cruise_kmh, stop_buffer_m,
             state.reason = "near_target_correction"
           end
 
-          if leg.mode == "terminal" and state.guidance_mode == "route" then
-            if buffer_target_speed_mps > 0 then
-              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
-              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
-              if state.reason == "speed_tracking" then
-                state.reason = "buffer_approach"
-              end
-            end
-          end
-
-          if leg.mode == "terminal"
-            and state.guidance_mode == "route"
-            and buffer_target_speed_mps > 0
-            and state.stop_guidance_block_reason == "outside_capture_window"
-            and overspeed < 0
-            and not terminal_buffer_brake_active
-            and not stop_context.in_no_reverse_approach then
-            terminal_progress_floor_throttle = terminal_buffer_progress_floor(
-              profile,
-              speed_toward_target_mps,
-              buffer_target_speed_mps,
-              throttle_limit
-            )
-          else
-            terminal_progress_floor_throttle = nil
-          end
-
           throttle = clamp(effort, 0, throttle_limit)
-          if terminal_progress_floor_throttle then
-            throttle = math.max(throttle, terminal_progress_floor_throttle)
-          end
           if state.final_forward_crawl
             and throttle_limit > 0
             and longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
@@ -2943,14 +2911,6 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         buffer_speed_cap_active_mps = math.min(target_speed_mps, buffer_target_speed_mps)
         target_speed_mps = buffer_speed_cap_active_mps
       end
-    end
-
-    -- Apply travel speed scale for pass_through legs only
-    if leg.mode == "pass_through" then
-      target_speed_mps = math.min(
-        target_speed_mps * (profile.travel_speed_scale or 1.0),
-        characteristics.cruise_mps * (profile.travel_speed_scale or 1.0)
-      )
     end
 
     if leg.mode == "terminal" and state.guidance_mode == "route" and profile.name == "fast" then
