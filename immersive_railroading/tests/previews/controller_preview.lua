@@ -50,10 +50,12 @@ local build_goto_route_plan = controller.build_goto_route_plan
 local build_named_route_plan = controller.build_named_route_plan
 local buffer_approach_target_speed = controller.buffer_approach_target_speed
 local buffer_pre_capture_target_speed = controller.buffer_pre_capture_target_speed
+local terminal_buffer_progress_floor = controller.terminal_buffer_progress_floor
 local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
 local can_enter_stop_guidance = controller.can_enter_stop_guidance
 local is_terminal_success_physical_ok = controller.is_terminal_success_physical_ok
 local is_terminal_success_consistent = controller.is_terminal_success_consistent
+local terminal_failure_arming_allowed = controller.terminal_failure_arming_allowed
 local should_enter_stop_guidance = controller.should_enter_stop_guidance
 
 local function get_profile(name)
@@ -389,6 +391,7 @@ local function preview_deadlock_candidate_since(state, stop_context, geometry, n
     and geometry.stop_longitudinal_error_m <= (geometry.deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
     and geometry.stop_lateral_error_m <= (geometry.max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
     and math.abs(geometry.speed_toward_target_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
+    and math.abs(geometry.progress_speed_mps or 0) <= DEFAULTS.terminal_deadlock_stall_speed_mps
     and math.abs(geometry.axis_speed_mps) <= math.max(DEFAULTS.terminal_deadlock_stall_speed_mps, DEFAULTS.arrival_speed_mps * 0.5)
 
   if target_ahead_stalled then
@@ -582,16 +585,26 @@ end
 
 do
   local fast_profile = get_profile("fast")
+  local conservative_profile = get_profile("conservative")
   local outside_zone = buffer_approach_target_speed(fast_profile, 25)
   local within_zone = buffer_approach_target_speed(fast_profile, 9)
   local near_capture = buffer_approach_target_speed(fast_profile, 3)
   local far_pre_capture = buffer_pre_capture_target_speed(fast_profile, 30, 0.94, 5.0)
   local near_pre_capture = buffer_pre_capture_target_speed(fast_profile, 9, 0.94, 5.0)
+  local fast_floor = terminal_buffer_progress_floor(fast_profile, 0.95, 1.80, fast_profile.terminal_buffer_throttle_limit)
+  local conservative_floor = terminal_buffer_progress_floor(conservative_profile, 0.95, 1.80, fast_profile.terminal_buffer_throttle_limit)
+  local outside_capture_regression_floor = terminal_buffer_progress_floor(fast_profile, 1.01, 1.67, fast_profile.terminal_buffer_throttle_limit)
+  local nearly_matched_floor = terminal_buffer_progress_floor(fast_profile, 1.58, 1.67, fast_profile.terminal_buffer_throttle_limit)
   assert(outside_zone == nil, "fast buffer target speed should stay inactive outside its soft zone")
   assert(within_zone ~= nil and within_zone < stop_speed_cap(15, 6, 0.9, 55), "fast buffer target speed should dominate the raw stop curve inside the soft zone")
   assert(near_capture ~= nil and near_capture < within_zone, "fast buffer target speed should keep tightening toward the capture window")
   assert(far_pre_capture ~= nil and far_pre_capture > fast_profile.terminal_buffer_release_speed_mps, "pre-capture target speed should stay above the final release speed while there is still runway left")
   assert(near_pre_capture ~= nil and near_pre_capture < far_pre_capture, "pre-capture target speed should tighten as the remaining runway to the capture window shrinks")
+  assert(math.abs(fast_profile.terminal_buffer_final_speed_cap_mps - 0.9) < 0.001, "fast terminal final speed cap should stay at the tuned 0.9m/s value")
+  assert(fast_floor ~= nil and fast_floor > DEFAULTS.throttle_deadband and fast_floor <= fast_profile.terminal_buffer_throttle_limit, "adaptive terminal progress floor should stay above deadband but within the local terminal throttle cap")
+  assert(conservative_floor ~= nil and fast_floor > conservative_floor, "fast terminal progress floor should stay stronger than conservative under the same shortfall")
+  assert(outside_capture_regression_floor ~= nil and outside_capture_regression_floor > DEFAULTS.throttle_deadband, "old outside-capture stall geometry should still receive a non-zero progress floor")
+  assert(nearly_matched_floor == nil, "terminal progress floor should disengage once speed nearly matches the buffer target")
 end
 
 do
@@ -906,6 +919,14 @@ assert(
   "log20-style target-ahead terminal stall should enter deadlock-forward recovery after the stall timer elapses"
 )
 assert(
+  terminal_failure_arming_allowed("waiting_for_deadlock_timer") == false,
+  "terminal failure must stay blocked while deadlock-forward recovery is intentionally waiting on its stall timer"
+)
+assert(
+  terminal_failure_arming_allowed("not_stalled_yet") == true,
+  "terminal failure may arm again once deadlock timer waiting is no longer active"
+)
+assert(
   preview_deadlock_candidate_since(
     {terminal_deadlock_candidate_since = nil},
     {in_no_reverse_approach = true, must_stop_now = false},
@@ -915,6 +936,7 @@ assert(
       stop_longitudinal_error_m = 4.28,
       stop_lateral_error_m = 0.78,
       speed_toward_target_mps = 0.05,
+      progress_speed_mps = 0.03,
       axis_speed_mps = 0.05,
     },
     50.0
@@ -931,11 +953,29 @@ assert(
       stop_longitudinal_error_m = 4.28,
       stop_lateral_error_m = 0.78,
       speed_toward_target_mps = 0.22,
+      progress_speed_mps = 0.22,
       axis_speed_mps = 0.22,
     },
     50.5
   ) == nil,
   "the deadlock candidate timer should clear again when normal target-ahead motion resumes"
+)
+assert(
+  preview_deadlock_candidate_since(
+    {terminal_deadlock_candidate_since = nil},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      deadlock_max_longitudinal_m = PROFILES.fast.buffer_settle_forward_deadlock_max_longitudinal_m,
+      max_lateral_m = PROFILES.fast.buffer_settle_max_lateral_m,
+      stop_longitudinal_error_m = 4.28,
+      stop_lateral_error_m = 0.78,
+      speed_toward_target_mps = 0.05,
+      progress_speed_mps = 0.35,
+      axis_speed_mps = 0.05,
+    },
+    50.0
+  ) == nil,
+  "deadlock candidate timing should not start during ordinary target-ahead braking progress"
 )
 assert(
   PROFILES.fast.buffer_settle_forward_deadlock_speed_mps > PROFILES.conservative.buffer_settle_forward_deadlock_speed_mps,

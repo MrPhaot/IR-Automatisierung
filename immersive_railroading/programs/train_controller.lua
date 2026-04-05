@@ -146,7 +146,7 @@ local PROFILES = {
     terminal_buffer_capture_distance_m = 5.0,
     terminal_buffer_soft_zone_m = 18.0,
     terminal_buffer_entry_speed_cap_mps = 3.0,
-    terminal_buffer_final_speed_cap_mps = 0.7,
+    terminal_buffer_final_speed_cap_mps = 0.9,
     terminal_buffer_throttle_limit = 0.05,
     terminal_buffer_brake_window_m = 12.0,
     terminal_buffer_release_speed_mps = 1.2,
@@ -688,6 +688,28 @@ local function buffer_pre_capture_target_speed(
   return math.sqrt(release_speed_mps * release_speed_mps + 2 * effective_brake_mps2 * braking_runway_m)
 end
 
+local function terminal_buffer_progress_floor(
+  profile,
+  speed_toward_target_mps,
+  buffer_target_speed_mps,
+  throttle_limit
+)
+  if buffer_target_speed_mps <= 0 or throttle_limit <= 0 then
+    return nil
+  end
+
+  local shortfall = math.max(buffer_target_speed_mps - math.max(speed_toward_target_mps, 0), 0)
+  if shortfall <= DEFAULTS.arrival_speed_mps then
+    return nil
+  end
+
+  local profile_scale = (profile and profile.name) == "fast" and 1.0 or 0.6
+  local base_floor = DEFAULTS.throttle_deadband + 0.01
+  local shortfall_ratio = math.min(shortfall / math.max(buffer_target_speed_mps, 0.1), 1.0)
+  local adaptive_floor = base_floor + shortfall_ratio * 0.02 * profile_scale
+  return math.min(adaptive_floor, throttle_limit)
+end
+
 local function terminal_buffer_required_stop_distance_m(speed_mps, brake_snapshot_mps2)
   if speed_mps <= 0 then
     return 0
@@ -1086,6 +1108,12 @@ local function should_fail_terminal_limit(
       stop_context,
       terminal_success_consistent
     )
+end
+
+local function terminal_failure_arming_allowed(buffer_settle_block_reason)
+  -- Keep failure and deadlock-forward recovery serialized so the stall timer
+  -- can complete before terminal failure is allowed to arm.
+  return buffer_settle_block_reason ~= "waiting_for_deadlock_timer"
 end
 
 local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context)
@@ -2596,7 +2624,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local buffer_throttle_limit_active = 0
     local terminal_buffer_brake_active = false
     local terminal_buffer_brake_reason = "inactive"
-    local emergency_min_throttle = nil
+    local terminal_progress_floor_throttle = nil
 
     if not state.target_line_axis then
       state.target_line_axis = normalize(to_physical_target) or {x = 1, y = 0, z = 0}
@@ -2929,6 +2957,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and stop_longitudinal_error_m <= (profile.buffer_settle_forward_deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
         and stop_lateral_error_m <= (profile.buffer_settle_max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
         and math.abs(speed_toward_target_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
+        and math.abs(state.progress_speed_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
         and math.abs(axis_speed_mps) <= math.max(DEFAULTS.terminal_deadlock_stall_speed_mps, DEFAULTS.arrival_speed_mps * 0.5)
 
       if target_ahead_stalled then
@@ -3174,7 +3203,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           state.terminal_settle_since = nil
         end
 
-        local terminal_limit_failure = should_fail_terminal_limit(
+        local terminal_limit_failure = terminal_failure_arming_allowed(buffer_settle_block_reason)
+          and should_fail_terminal_limit(
           distance_to_stop_target_m,
           stop_longitudinal_distance_m,
           stop_lateral_error_m,
@@ -3462,27 +3492,12 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             state.reason = "no_reverse_approach"
           end
           if leg.mode == "terminal" and state.guidance_mode == "route" then
-            local capture_base = profile.terminal_buffer_capture_distance_m or DEFAULTS.terminal_stop_capture_distance_m
-            local emergency_threshold = 1.5 * capture_base
             if buffer_target_speed_mps > 0 then
               buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
               throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
               if state.reason == "speed_tracking" then
                 state.reason = "buffer_approach"
               end
-            elseif physical_distance_minus_buffer_m > capture_base and physical_distance_minus_buffer_m <= emergency_threshold then
-              -- Emergency small throttle to break potential stall when just outside capture window
-              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit or DEFAULTS.approach_stop_throttle_limit
-              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
-              if state.reason == "speed_tracking" then
-                state.reason = "buffer_approach"
-              end
-              emergency_min_throttle = DEFAULTS.throttle_deadband + 0.01
-              emit_line(logger, ("emergency_buffer_throttle_active capture_base=%.2f physical_distance_minus_buffer=%.2f emergency_min_throttle=%.2f"):format(
-                capture_base,
-                physical_distance_minus_buffer_m,
-                emergency_min_throttle
-              ))
             end
           end
           if buffer_settle_mode == "forward" then
@@ -3508,9 +3523,26 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             state.reason = "near_target_correction"
           end
 
+          if leg.mode == "terminal"
+            and state.guidance_mode == "route"
+            and buffer_target_speed_mps > 0
+            and state.stop_guidance_block_reason == "outside_capture_window"
+            and overspeed < 0
+            and not terminal_buffer_brake_active
+            and not stop_context.in_no_reverse_approach then
+            terminal_progress_floor_throttle = terminal_buffer_progress_floor(
+              profile,
+              speed_toward_target_mps,
+              buffer_target_speed_mps,
+              throttle_limit
+            )
+          else
+            terminal_progress_floor_throttle = nil
+          end
+
           throttle = clamp(effort, 0, throttle_limit)
-          if emergency_min_throttle then
-            throttle = math.max(throttle, math.min(emergency_min_throttle, throttle_limit))
+          if terminal_progress_floor_throttle then
+            throttle = math.max(throttle, terminal_progress_floor_throttle)
           end
           if buffer_settle_mode == "forward"
             and throttle_limit > 0
@@ -3972,10 +4004,12 @@ local exports = {
   execute_route_plan = execute_route_plan,
   buffer_approach_target_speed = buffer_approach_target_speed,
   buffer_pre_capture_target_speed = buffer_pre_capture_target_speed,
+  terminal_buffer_progress_floor = terminal_buffer_progress_floor,
   terminal_buffer_required_stop_distance_m = terminal_buffer_required_stop_distance_m,
   can_enter_stop_guidance = can_enter_stop_guidance,
   is_terminal_success_physical_ok = is_terminal_success_physical_ok,
   is_terminal_success_consistent = is_terminal_success_consistent,
+  terminal_failure_arming_allowed = terminal_failure_arming_allowed,
   should_enter_stop_guidance = should_enter_stop_guidance,
 }
 
