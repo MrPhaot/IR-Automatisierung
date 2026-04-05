@@ -358,12 +358,14 @@ local function preview_buffer_settle_mode(profile_name, terminal_success_stop_ok
     and not stop_context.must_stop_now
     and geometry.stop_longitudinal_error_m > (profile.buffer_settle_forward_max_longitudinal_m or 0)
     and geometry.stop_longitudinal_error_m <= (profile.buffer_settle_forward_deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
-    and geometry.stop_lateral_error_m <= DEFAULTS.near_target_correction_lateral_m
-    and math.abs(geometry.speed_toward_target_mps) <= (profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps)
+    and geometry.stop_lateral_error_m <= (profile.buffer_settle_max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
+    and math.abs(geometry.speed_toward_target_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
     and math.abs(geometry.axis_speed_mps) <= math.max(
-      profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps,
-      DEFAULTS.arrival_speed_mps * 2
-    ) then
+      DEFAULTS.terminal_deadlock_stall_speed_mps,
+      DEFAULTS.arrival_speed_mps * 0.5
+    )
+    and geometry.terminal_deadlock_candidate_since ~= nil
+    and geometry.now - geometry.terminal_deadlock_candidate_since >= DEFAULTS.terminal_deadlock_stall_time_s then
     return "forward"
   end
   if profile.name == "fast"
@@ -378,6 +380,21 @@ local function preview_buffer_settle_mode(profile_name, terminal_success_stop_ok
     return "reverse"
   end
   return "none"
+end
+
+local function preview_deadlock_candidate_since(state, stop_context, geometry, now)
+  local target_ahead_stalled = stop_context.in_no_reverse_approach
+    and not stop_context.must_stop_now
+    and geometry.stop_longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
+    and geometry.stop_longitudinal_error_m <= (geometry.deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
+    and geometry.stop_lateral_error_m <= (geometry.max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
+    and math.abs(geometry.speed_toward_target_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
+    and math.abs(geometry.axis_speed_mps) <= math.max(DEFAULTS.terminal_deadlock_stall_speed_mps, DEFAULTS.arrival_speed_mps * 0.5)
+
+  if target_ahead_stalled then
+    return state.terminal_deadlock_candidate_since or now
+  end
+  return nil
 end
 
 local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, in_no_reverse_approach)
@@ -858,14 +875,16 @@ assert(
     {stop_first_active = false, near_target_correction_active = false},
     {in_no_reverse_approach = true, must_stop_now = false},
     {
+      now = 100.0,
+      terminal_deadlock_candidate_since = nil,
       raw_desired_reverser = 1,
       stop_longitudinal_error_m = 3.94,
-      stop_lateral_error_m = 0.98,
+      stop_lateral_error_m = 0.78,
       speed_toward_target_mps = 0.0,
       axis_speed_mps = 0.0,
     }
-  ) == "forward",
-  "log20-style target-ahead terminal stall should enter deadlock-forward recovery"
+  ) == "none",
+  "deadlock-forward must stay blocked until the short stall timer has actually elapsed"
 )
 assert(
   preview_buffer_settle_mode(
@@ -875,6 +894,67 @@ assert(
     {stop_first_active = false, near_target_correction_active = false},
     {in_no_reverse_approach = true, must_stop_now = false},
     {
+      now = 100.0,
+      terminal_deadlock_candidate_since = 99.0,
+      raw_desired_reverser = 1,
+      stop_longitudinal_error_m = 3.94,
+      stop_lateral_error_m = 0.78,
+      speed_toward_target_mps = 0.0,
+      axis_speed_mps = 0.0,
+    }
+  ) == "forward",
+  "log20-style target-ahead terminal stall should enter deadlock-forward recovery after the stall timer elapses"
+)
+assert(
+  preview_deadlock_candidate_since(
+    {terminal_deadlock_candidate_since = nil},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      deadlock_max_longitudinal_m = PROFILES.fast.buffer_settle_forward_deadlock_max_longitudinal_m,
+      max_lateral_m = PROFILES.fast.buffer_settle_max_lateral_m,
+      stop_longitudinal_error_m = 4.28,
+      stop_lateral_error_m = 0.78,
+      speed_toward_target_mps = 0.05,
+      axis_speed_mps = 0.05,
+    },
+    50.0
+  ) == 50.0,
+  "target-ahead terminal stalls should start the deadlock candidate timer once the train is truly stationary"
+)
+assert(
+  preview_deadlock_candidate_since(
+    {terminal_deadlock_candidate_since = 50.0},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      deadlock_max_longitudinal_m = PROFILES.fast.buffer_settle_forward_deadlock_max_longitudinal_m,
+      max_lateral_m = PROFILES.fast.buffer_settle_max_lateral_m,
+      stop_longitudinal_error_m = 4.28,
+      stop_lateral_error_m = 0.78,
+      speed_toward_target_mps = 0.22,
+      axis_speed_mps = 0.22,
+    },
+    50.5
+  ) == nil,
+  "the deadlock candidate timer should clear again when normal target-ahead motion resumes"
+)
+assert(
+  PROFILES.fast.buffer_settle_forward_deadlock_speed_mps > PROFILES.conservative.buffer_settle_forward_deadlock_speed_mps,
+  "fast deadlock-forward correction should stay materially quicker than conservative"
+)
+assert(
+  PROFILES.fast.buffer_settle_forward_deadlock_throttle_limit > PROFILES.conservative.buffer_settle_forward_deadlock_throttle_limit,
+  "fast deadlock-forward throttle should stay less conservative than the conservative profile"
+)
+assert(
+  preview_buffer_settle_mode(
+    "fast",
+    false,
+    false,
+    {stop_first_active = false, near_target_correction_active = false},
+    {in_no_reverse_approach = true, must_stop_now = false},
+    {
+      now = 100.0,
+      terminal_deadlock_candidate_since = 99.0,
       raw_desired_reverser = 1,
       stop_longitudinal_error_m = 12.5,
       stop_lateral_error_m = 0.4,
