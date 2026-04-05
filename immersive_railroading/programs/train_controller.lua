@@ -3460,11 +3460,26 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
             )
             state.reason = "no_reverse_approach"
           end
-          if leg.mode == "terminal" and state.guidance_mode == "route" and buffer_target_speed_mps > 0 then
-            buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
-            throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
-            if state.reason == "speed_tracking" then
-              state.reason = "buffer_approach"
+          if leg.mode == "terminal" and state.guidance_mode == "route" then
+            local capture_base = profile.terminal_buffer_capture_distance_m or DEFAULTS.terminal_stop_capture_distance_m
+            local emergency_threshold = 1.5 * capture_base
+            if buffer_target_speed_mps > 0 then
+              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
+              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
+              if state.reason == "speed_tracking" then
+                state.reason = "buffer_approach"
+              end
+            elseif physical_distance_minus_buffer_m > capture_base and physical_distance_minus_buffer_m <= emergency_threshold then
+              -- Emergency small throttle to break potential stall when just outside capture window
+              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit or DEFAULTS.approach_stop_throttle_limit
+              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
+              if state.reason == "speed_tracking" then
+                state.reason = "buffer_approach"
+              end
+              emit_line(logger, ("emergency_buffer_throttle_active capture_base=%.2f physical_distance_minus_buffer=%.2f"):format(
+                capture_base,
+                physical_distance_minus_buffer_m
+              ))
             end
           end
           if buffer_settle_mode == "forward" then

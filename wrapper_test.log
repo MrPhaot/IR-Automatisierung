@@ -1,0 +1,15 @@
+pid ok: kp=0.0941 ki=0.0109 kd=0.4500
+brake learning ok: 1.230 m/s^2
+stop profile ok: 7.36 m/s at 25m, 21.24 m/s at 400m
+lateral frame regression ok: 15.28 m/s cap stays above zero
+axis capture regression ok: sideways startup jitter rejected
+target line axis regression ok: target geometry stays primary over early motion samples
+approach stop regression ok: late braking is forced near the target
+overshoot recovery regression ok: small overshoot keeps braking before reverse recovery
+terminal brake hold regression ok: approach stop does not release the brake too early
+off-target line regression ok: large residual miss is not treated as a valid terminal arrival
+curve guard regression ok: bends do not immediately trigger moving-away braking
+startup guard regression ok: early shallow regressions do not trigger stop-and-go
+interrupt regression ok: interrupted and terminated reasons are recognized
+canonical import regression ok: preview uses production defaults, profiles, and lookup paths
+characteristic extraction ok: mass=100493 traction=194161 power=1900789W
