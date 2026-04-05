@@ -56,7 +56,7 @@ local DEFAULTS = {
   near_target_correction_lateral_m = 6.0,
   near_target_correction_speed_mps = 0.8,
   near_target_correction_throttle_limit = 0.05,
-  brake_release_hold_s = 0.8,
+  brake_release_hold_s = 1.5,
   overspeed_full_brake_margin_mps = 2.0,
   min_brake_command = 0.08,
   min_axis_speed_mps = 0.35,
@@ -147,7 +147,7 @@ local PROFILES = {
     terminal_buffer_soft_zone_m = 18.0,
     terminal_buffer_entry_speed_cap_mps = 3.0,
     terminal_buffer_final_speed_cap_mps = 0.7,
-    terminal_buffer_throttle_limit = 0.02,
+    terminal_buffer_throttle_limit = 0.05,
     terminal_buffer_brake_window_m = 12.0,
     terminal_buffer_release_speed_mps = 1.2,
     terminal_success_buffer_tolerance_m = DEFAULTS.terminal_success_buffer_tolerance_fast_m,
@@ -2596,6 +2596,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local buffer_throttle_limit_active = 0
     local terminal_buffer_brake_active = false
     local terminal_buffer_brake_reason = "inactive"
+    local emergency_min_throttle = nil
 
     if not state.target_line_axis then
       state.target_line_axis = normalize(to_physical_target) or {x = 1, y = 0, z = 0}
@@ -3476,9 +3477,11 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
               if state.reason == "speed_tracking" then
                 state.reason = "buffer_approach"
               end
-              emit_line(logger, ("emergency_buffer_throttle_active capture_base=%.2f physical_distance_minus_buffer=%.2f"):format(
+              emergency_min_throttle = DEFAULTS.throttle_deadband + 0.01
+              emit_line(logger, ("emergency_buffer_throttle_active capture_base=%.2f physical_distance_minus_buffer=%.2f emergency_min_throttle=%.2f"):format(
                 capture_base,
-                physical_distance_minus_buffer_m
+                physical_distance_minus_buffer_m,
+                emergency_min_throttle
               ))
             end
           end
@@ -3506,6 +3509,9 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           end
 
           throttle = clamp(effort, 0, throttle_limit)
+          if emergency_min_throttle then
+            throttle = math.max(throttle, math.min(emergency_min_throttle, throttle_limit))
+          end
           if buffer_settle_mode == "forward"
             and throttle_limit > 0
             and stop_longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
