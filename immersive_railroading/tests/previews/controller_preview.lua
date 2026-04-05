@@ -391,13 +391,43 @@ local function preview_deadlock_candidate_since(state, stop_context, geometry, n
     and geometry.stop_longitudinal_error_m <= (geometry.deadlock_max_longitudinal_m or DEFAULTS.terminal_deadlock_forward_max_longitudinal_m)
     and geometry.stop_lateral_error_m <= (geometry.max_lateral_m or DEFAULTS.near_target_correction_lateral_m)
     and math.abs(geometry.speed_toward_target_mps) <= DEFAULTS.terminal_deadlock_stall_speed_mps
-    and math.abs(geometry.progress_speed_mps or 0) <= DEFAULTS.terminal_deadlock_stall_speed_mps
+    and math.abs(geometry.stop_progress_speed_mps or 0) <= DEFAULTS.terminal_deadlock_stall_speed_mps
     and math.abs(geometry.axis_speed_mps) <= math.max(DEFAULTS.terminal_deadlock_stall_speed_mps, DEFAULTS.arrival_speed_mps * 0.5)
 
   if target_ahead_stalled then
     return state.terminal_deadlock_candidate_since or now
   end
   return nil
+end
+
+local function preview_reset_stop_progress_on_entry(distance_to_stop_target_m)
+  return {
+    stop_previous_distance_to_target_m = distance_to_stop_target_m,
+    stop_distance_delta_m = 0,
+    stop_progress_speed_mps = 0,
+    stop_progress_initialized = true,
+  }
+end
+
+local function preview_update_stop_progress(state, distance_to_stop_target_m, dt_s)
+  local raw_stop_progress_speed_mps = 0
+  if state.stop_progress_initialized and state.stop_previous_distance_to_target_m then
+    raw_stop_progress_speed_mps = (state.stop_previous_distance_to_target_m - distance_to_stop_target_m) / dt_s
+  end
+
+  state.stop_distance_delta_m = state.stop_previous_distance_to_target_m
+    and (distance_to_stop_target_m - state.stop_previous_distance_to_target_m)
+    or 0
+  state.stop_progress_speed_mps = ema(
+    state.stop_progress_speed_mps,
+    raw_stop_progress_speed_mps,
+    DEFAULTS.distance_progress_memory_s,
+    dt_s
+  ) or raw_stop_progress_speed_mps
+  state.stop_previous_distance_to_target_m = distance_to_stop_target_m
+  state.stop_progress_initialized = true
+
+  return raw_stop_progress_speed_mps
 end
 
 local function is_off_target_line_failure(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, in_no_reverse_approach)
@@ -927,6 +957,35 @@ assert(
   "terminal failure may arm again once deadlock timer waiting is no longer active"
 )
 assert(
+  (function()
+    local state = {
+      stop_previous_distance_to_target_m = 120.0,
+      stop_distance_delta_m = 9.0,
+      stop_progress_speed_mps = -4.0,
+      stop_progress_initialized = false,
+    }
+    local reset = preview_reset_stop_progress_on_entry(4.89)
+    for key, value in pairs(reset) do
+      state[key] = value
+    end
+    local raw_progress = preview_update_stop_progress(state, 4.89, 0.5)
+    return raw_progress == 0
+      and state.stop_distance_delta_m == 0
+      and math.abs(state.stop_progress_speed_mps) <= 0.0001
+      and state.stop_progress_initialized == true
+      and math.abs(state.stop_previous_distance_to_target_m - 4.89) <= 0.0001
+  end)(),
+  "stop guidance entry should reset and seed stop-local progress without injecting a synthetic frame-switch sample"
+)
+assert(
+  (function()
+    local state = preview_reset_stop_progress_on_entry(4.89)
+    preview_update_stop_progress(state, 4.84, 0.5)
+    return state.stop_progress_speed_mps > 0
+  end)(),
+  "stop-local progress should rise only from stop-target distance deltas after stop guidance is active"
+)
+assert(
   preview_deadlock_candidate_since(
     {terminal_deadlock_candidate_since = nil},
     {in_no_reverse_approach = true, must_stop_now = false},
@@ -936,12 +995,13 @@ assert(
       stop_longitudinal_error_m = 4.28,
       stop_lateral_error_m = 0.78,
       speed_toward_target_mps = 0.05,
-      progress_speed_mps = 0.03,
+      progress_speed_mps = 0.85,
+      stop_progress_speed_mps = 0.03,
       axis_speed_mps = 0.05,
     },
     50.0
   ) == 50.0,
-  "target-ahead terminal stalls should start the deadlock candidate timer once the train is truly stationary"
+  "target-ahead terminal stalls should start the deadlock candidate timer from stop-local progress even when global progress is unrelated"
 )
 assert(
   preview_deadlock_candidate_since(
@@ -953,12 +1013,13 @@ assert(
       stop_longitudinal_error_m = 4.28,
       stop_lateral_error_m = 0.78,
       speed_toward_target_mps = 0.22,
-      progress_speed_mps = 0.22,
+      progress_speed_mps = 0.02,
+      stop_progress_speed_mps = 0.22,
       axis_speed_mps = 0.22,
     },
     50.5
   ) == nil,
-  "the deadlock candidate timer should clear again when normal target-ahead motion resumes"
+  "the deadlock candidate timer should clear again when stop-local target-ahead motion resumes"
 )
 assert(
   preview_deadlock_candidate_since(
@@ -970,12 +1031,30 @@ assert(
       stop_longitudinal_error_m = 4.28,
       stop_lateral_error_m = 0.78,
       speed_toward_target_mps = 0.05,
-      progress_speed_mps = 0.35,
+      progress_speed_mps = 0.0,
+      stop_progress_speed_mps = 0.35,
       axis_speed_mps = 0.05,
     },
     50.0
   ) == nil,
-  "deadlock candidate timing should not start during ordinary target-ahead braking progress"
+  "deadlock candidate timing should not start during ordinary stop-target braking progress"
+)
+assert(
+  (function()
+    local fast_profile = get_profile("fast")
+    local use_stop_guidance, reason = can_enter_stop_guidance(
+      10.24,
+      7.24,
+      0.5,
+      0.85,
+      fast_profile.terminal_buffer_capture_distance_m,
+      0.0,
+      0.94,
+      fast_profile
+    )
+    return use_stop_guidance == false and reason == "outside_capture_window"
+  end)(),
+  "outside-capture-window guidance blocking should remain unchanged for the test23-style stall geometry"
 )
 assert(
   PROFILES.fast.buffer_settle_forward_deadlock_speed_mps > PROFILES.conservative.buffer_settle_forward_deadlock_speed_mps,
