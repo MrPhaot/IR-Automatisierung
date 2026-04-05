@@ -51,6 +51,16 @@ Those fields are now preferred over older conservative fallbacks when deriving c
   - speed limits from `max_speed`
 - If those fields are missing, it still falls back to named conservative defaults and prints the derived values in `inspect` so in-game testing can reveal what should be tightened later.
 
+## Speed-Centric Runtime Signals
+- Route execution now logs a planner/allocator split for longitudinal control:
+  - `speed_plan_target_mps`
+  - `speed_plan_force_mode`
+  - `effort_cmd`
+  - `allocated_throttle`
+  - `allocated_brake`
+- `speed_plan_force_mode` is limited to `auto`, `coast`, `full_brake`, and `hold`.
+- Terminal diagnostics remain unchanged in scope (for example stop-guidance entry reason, settle state, failure arming, and deadlock timing), so safety analysis still uses the same channels as before.
+
 ## Observed Mismatch To Keep In Mind
 - Plan requirement: derive PID scales from train characteristics.
 - Runtime uncertainty: the exact `info()` table shape is still not locally documented as a stable contract.

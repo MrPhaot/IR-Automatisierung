@@ -7,6 +7,14 @@
 - Power prefers watt or kilowatt fields first, then falls back to `horsepower` converted to watts
 - Command surface: throttle, reverser, brake, independent brake, ignition
 
+## Speed-Centric Longitudinal Split
+- The controller now separates planning/state from actuator output:
+  - planner/state machine decides `v_target_mps`, desired reverser, and hard force mode (`auto`, `coast`, `full_brake`, `hold`)
+  - one signed longitudinal controller computes effort from speed error in `auto`
+  - one allocator maps signed effort to throttle-only or brake-only output
+- Normal driving no longer shapes behavior with throttle caps, throttle floors, or profile-specific throttle clamps.
+- Terminal safety still comes from the speed envelope, stop-guidance state, and failure serialization logic.
+
 ## Why The PID Baseline Is Physics-Derived
 - A fixed gain set would only match one train.
 - V1 instead scales gains from a reference cruise speed, a traction-limited drive horizon, and a brake-limited stop horizon.
@@ -39,13 +47,13 @@ local kd = kp * math.min(t_drive, t_brake)
 - The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
 - Near-target overshoots now follow a `stop_first` rule: brake to a real halt first, then either accept a small residual miss as `near_target_arrival` or allow only a very small correction move.
 - That near-target resolution is intentionally split into phases: `stop_first` handles the stop itself, then a second decision chooses `near_target_arrival`, a limited `near_target_correction`, or a logged V1 limit if the residual miss is already too large for a tiny correction.
-- The complementary failure mode is stopping short inside the terminal no-reverse window. V1.1 therefore reuses `final_forward_crawl` as a guarded forward recovery mode: if the target is still ahead, alignment remains sane, and the residual miss stays inside a small terminal corridor, the controller may apply a small minimum throttle instead of declaring an immediate stall.
+- The complementary failure mode is stopping short inside the terminal no-reverse window. V1.1 therefore reuses `final_forward_crawl` as a guarded forward recovery mode: if the target is still ahead, alignment remains sane, and the residual miss stays inside a small terminal corridor, the planner lowers the speed target and the shared signed effort path handles actuator output.
 
 ## Profile Modes
 
 - `conservative` is the default profile when no explicit flag is passed to `trainctl goto`.
 - `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and preferring a very slow forward recovery over any reverse recovery when the train ends up stopping short.
-- `fast` keeps a looser end-phase envelope and allows more residual dynamics, so it stays closer to the old behavior and may still need fallback recovery more often.
+- `fast` differs primarily by a higher pass-through travel speed scale; terminal endgame speed planning remains aligned with `conservative` in this redesign branch.
 
 ## Why Distance And Motion Axis Are Now Separate
 

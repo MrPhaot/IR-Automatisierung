@@ -1232,6 +1232,57 @@ local function compute_brake_command(overspeed, minimum)
   return brake
 end
 
+local function make_speed_plan(v_target_mps, desired_reverser, reason, force_mode)
+  return {
+    v_target_mps = math.max(v_target_mps or 0, 0),
+    desired_reverser = desired_reverser or 1,
+    reason = reason or "speed_tracking",
+    force_mode = force_mode or "auto", -- auto | coast | hold | full_brake
+  }
+end
+
+local function compute_longitudinal_effort(pid, integral, previous_error, speed_error, dt_s, integral_limit)
+  integral = integral or 0
+  previous_error = previous_error or 0
+  integral_limit = math.max(integral_limit or 0, 0)
+  dt_s = math.max(dt_s or DEFAULTS.loop_dt_s, 0.001)
+
+  local next_integral = clamp(integral + speed_error * dt_s, -integral_limit, integral_limit)
+  local derivative = (speed_error - previous_error) / dt_s
+  local raw_effort = pid.kp * speed_error + pid.ki * next_integral + pid.kd * derivative
+  local effort = clamp(raw_effort, -1, 1)
+
+  -- Anti-windup: keep the integrator from piling up further into saturation.
+  if raw_effort ~= effort then
+    if (raw_effort > 1 and speed_error > 0) or (raw_effort < -1 and speed_error < 0) then
+      next_integral = integral
+    end
+  end
+
+  return effort, next_integral, speed_error
+end
+
+local function allocate_effort_to_controls(effort_cmd, reverser)
+  local throttle = 0
+  local brake = 0
+
+  if effort_cmd >= DEFAULTS.throttle_deadband then
+    throttle = clamp(effort_cmd, 0, 1)
+  elseif effort_cmd <= -DEFAULTS.brake_deadband then
+    brake = clamp(-effort_cmd, 0, 1)
+    if brake > 0 and brake < DEFAULTS.min_brake_command then
+      brake = DEFAULTS.min_brake_command
+    end
+  end
+
+  return {
+    throttle = throttle,
+    reverser = reverser or 1,
+    brake = brake,
+    independent_brake = 0,
+  }
+end
+
 local function print_table(title, value, indent, visited, logger)
   indent = indent or ""
   visited = visited or {}
@@ -3379,13 +3430,18 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       state.terminal_deadlock_recovery_active = false
     end
 
+    local speed_plan = make_speed_plan(target_speed_mps, desired_reverser, "speed_tracking", "auto")
+    local effort_cmd = 0
+    local allocated_throttle = 0
+    local allocated_brake = 0
     local control
     if hold then
       runtime_context.settled_since = runtime_context.settled_since or now
+      speed_plan = make_speed_plan(target_speed_mps, desired_reverser, terminal_limit_hold and "arrived_within_v1_limit"
+        or (near_target_hold and "near_target_arrival" or "arrival_window"), "hold")
       state.mode = "hold"
       state.phase = "hold"
-      state.reason = terminal_limit_hold and "arrived_within_v1_limit"
-        or (near_target_hold and "near_target_arrival" or "arrival_window")
+      state.reason = speed_plan.reason
       state.active_reverser = desired_reverser
       state.stop_first_active = false
       state.stopped_after_overshoot = false
@@ -3400,6 +3456,8 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         brake = DEFAULTS.hold_brake,
         independent_brake = DEFAULTS.hold_independent_brake,
       }
+      allocated_throttle = control.throttle
+      allocated_brake = control.brake
       if now - runtime_context.settled_since >= DEFAULTS.settle_time_s then
         local hold_ok, hold_error = pcall(apply_safe_stop, remote, control.brake)
         if not hold_ok then
@@ -3442,23 +3500,23 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
       end
     else
       runtime_context.settled_since = nil
-      local throttle = 0
-      local brake = 0
-
       if leg.mode == "terminal" and state.guidance_mode == "stop" and state.near_target_resolution == "limit" then
         state.buffer_settle_mode = "none"
         state.buffer_settle_eligible = false
         state.buffer_settle_block_reason = "near_target_limit"
         state.final_forward_crawl = false
+        speed_plan = make_speed_plan(target_speed_mps, state.active_reverser, "near_target_limit", "hold")
         state.mode = "hold"
         state.phase = "hold"
-        state.reason = "near_target_limit"
+        state.reason = speed_plan.reason
         control = {
           throttle = 0,
           reverser = 0,
           brake = DEFAULTS.hold_brake,
           independent_brake = DEFAULTS.hold_independent_brake,
         }
+        allocated_throttle = control.throttle
+        allocated_brake = control.brake
         local hold_ok, hold_error = pcall(apply_safe_stop, remote, control.brake)
         if not hold_ok then
           local normalized_hold_error = normalize_runtime_error(hold_error)
@@ -3491,252 +3549,111 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         return nil, "near-target correction exceeds V1 envelope"
       end
 
+      local planner_reason = "speed_tracking"
+      if buffer_settle_mode == "forward" then
+        planner_reason = "buffer_settle_forward"
+      elseif buffer_settle_mode == "reverse" then
+        planner_reason = "buffer_settle_reverse"
+      elseif state.near_target_correction_active then
+        planner_reason = "near_target_correction"
+      elseif stop_context.in_no_reverse_approach then
+        planner_reason = "no_reverse_approach"
+      end
+
+      local speed_plan_desired_reverser = desired_reverser
+      local speed_plan_force_mode = "auto"
+
       if switching_reverser and math.abs(axis_speed_mps) > DEFAULTS.reverser_switch_speed_mps then
-        state.mode = "brake"
+        speed_plan_force_mode = "full_brake"
+        speed_plan_desired_reverser = state.active_reverser
+        planner_reason = "reverser_mismatch"
         state.phase = "reverse_brake"
-        state.reason = "reverser_mismatch"
-        runtime_context.integral = 0
-        brake = math.max(
-          DEFAULTS.reverse_brake_min,
-          clamp(math.abs(axis_speed_mps) / DEFAULTS.reverse_brake_speed_scale_mps, 0, 1)
-        )
-        state.brake_release_until = nil
       else
         if switching_reverser and math.abs(axis_speed_mps) <= DEFAULTS.reverser_switch_speed_mps then
           state.active_reverser = desired_reverser
+          speed_plan_desired_reverser = state.active_reverser
           state.phase = "reverse_launch"
-          state.reason = "reverser_aligned"
         else
           state.phase = "tracking"
-          state.reason = "speed_tracking"
-        end
-
-        if terminal_buffer_brake_active then
-          state.mode = "brake"
-        else
-          state.mode = select_motion_mode(
-            state,
-            speed_toward_target_mps,
-            target_speed_mps,
-            distance_to_target_m,
-            stop_context,
-            profile,
-            moving_away_brake_allowed
-          )
-        end
-
-        if state.mode == "drive" then
-          state.reason = state.phase == "reverse_launch" and "restart_after_reverse" or "speed_tracking"
-          if stop_context.in_approach_stop or stop_context.in_no_reverse_approach then
-            runtime_context.integral = runtime_context.integral * profile.end_phase_integral_decay
-          end
-          runtime_context.integral = clamp(
-            runtime_context.integral + speed_error * dt_s,
-            -target_speed_mps * 2,
-            target_speed_mps * 2
-          )
-          local derivative = (speed_error - runtime_context.previous_error) / dt_s
-          local effort = pid.kp * speed_error + pid.ki * runtime_context.integral + pid.kd * derivative
-          local weight_factor = weight_approach_factor(characteristics)
-          local throttle_limit = distance_to_target_m <= DEFAULTS.approach_distance_m
-            and DEFAULTS.approach_throttle_limit * weight_factor
-            or DEFAULTS.cruise_throttle_limit
-
-          if math.abs(speed_toward_target_mps) <= DEFAULTS.restart_from_stop_speed_mps then
-            throttle_limit = math.min(
-              throttle_limit,
-              DEFAULTS.launch_throttle_limit * weight_factor * profile.launch_throttle_scale
-            )
-          end
-          if stop_context.in_approach_stop then
-            throttle_limit = math.min(
-              throttle_limit,
-              DEFAULTS.approach_stop_throttle_limit * weight_factor * profile.approach_stop_throttle_scale
-            )
-          end
-          if stop_context.in_no_reverse_approach then
-            throttle_limit = math.min(
-              throttle_limit,
-              DEFAULTS.approach_stop_throttle_limit * weight_factor * profile.approach_stop_throttle_scale
-            )
-            state.reason = "no_reverse_approach"
-          end
-          if leg.mode == "terminal" and state.guidance_mode == "route" then
-            if buffer_target_speed_mps > 0 then
-              buffer_throttle_limit_active = profile.terminal_buffer_throttle_limit
-              throttle_limit = math.min(throttle_limit, buffer_throttle_limit_active)
-              if state.reason == "speed_tracking" then
-                state.reason = "buffer_approach"
-              end
-            end
-          end
-          if buffer_settle_mode == "forward" then
-            throttle_limit = math.min(throttle_limit, profile.buffer_settle_forward_throttle_limit or throttle_limit)
-            if buffer_settle_block_reason == "deadlock_forward_recovery" then
-              throttle_limit = math.min(
-                throttle_limit,
-                profile.buffer_settle_forward_deadlock_throttle_limit
-                  or profile.buffer_settle_forward_throttle_limit
-                  or throttle_limit
-              )
-            end
-            state.reason = "buffer_settle_forward"
-          elseif buffer_settle_mode == "reverse" then
-            throttle_limit = math.min(throttle_limit, profile.buffer_settle_reverse_throttle_limit or throttle_limit)
-            state.reason = "buffer_settle_reverse"
-          end
-          if stop_context.must_stop_now then
-            throttle_limit = 0
-          end
-          if state.near_target_correction_active then
-            throttle_limit = math.min(throttle_limit, DEFAULTS.near_target_correction_throttle_limit)
-            state.reason = "near_target_correction"
-          end
-
-          if leg.mode == "terminal"
-            and state.guidance_mode == "route"
-            and buffer_target_speed_mps > 0
-            and state.stop_guidance_block_reason == "outside_capture_window"
-            and overspeed < 0
-            and not terminal_buffer_brake_active
-            and not stop_context.in_no_reverse_approach then
-            terminal_progress_floor_throttle = terminal_buffer_progress_floor(
-              profile,
-              speed_toward_target_mps,
-              buffer_target_speed_mps,
-              throttle_limit
-            )
-          else
-            terminal_progress_floor_throttle = nil
-          end
-
-          throttle = clamp(effort, 0, throttle_limit)
-          if terminal_progress_floor_throttle then
-            throttle = math.max(throttle, terminal_progress_floor_throttle)
-          end
-          if buffer_settle_mode == "forward"
-            and throttle_limit > 0
-            and stop_longitudinal_error_m > DEFAULTS.arrival_longitudinal_m
-            and math.abs(speed_toward_target_mps) <= (
-              buffer_settle_block_reason == "deadlock_forward_recovery"
-                and (profile.buffer_settle_forward_deadlock_speed_mps or DEFAULTS.terminal_deadlock_forward_speed_mps)
-                or (profile.buffer_settle_forward_speed_mps or DEFAULTS.arrival_speed_mps)
-            ) then
-            throttle = math.max(
-              throttle,
-              math.min(
-                buffer_settle_block_reason == "deadlock_forward_recovery"
-                  and (
-                    profile.buffer_settle_forward_deadlock_throttle_limit
-                    or profile.buffer_settle_forward_throttle_limit
-                    or profile.terminal_recovery_min_throttle
-                  )
-                  or (profile.terminal_recovery_min_throttle or profile.buffer_settle_forward_throttle_limit),
-                throttle_limit
-              )
-            )
-          end
-          if throttle < DEFAULTS.throttle_deadband then
-            throttle = 0
-          end
-          if state.phase == "reverse_launch" and math.abs(axis_speed_mps) >= DEFAULTS.axis_lock_speed_mps then
-            state.phase = "tracking"
-          end
-        elseif state.mode == "brake" then
-          runtime_context.integral = 0
-          if terminal_buffer_brake_active then
-            state.reason = "terminal_buffer_brake"
-            brake = 1.0
-          elseif state.stop_first_active then
-            state.reason = "terminal_brake"
-            brake = math.max(
-              DEFAULTS.approach_stop_min_brake,
-              compute_brake_command(
-                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
-                DEFAULTS.approach_stop_min_brake
-              )
-            )
-          elseif suppress_reverse_recovery then
-            state.reason = "terminal_brake"
-            brake = math.max(
-              DEFAULTS.min_brake_command,
-              compute_brake_command(
-                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
-                DEFAULTS.min_brake_command
-              )
-            )
-          elseif stop_context.in_approach_stop and speed_toward_target_mps > DEFAULTS.arrival_speed_mps then
-            state.reason = "approach_stop"
-            brake = math.max(
-              DEFAULTS.approach_stop_min_brake,
-              compute_brake_command(
-                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
-                DEFAULTS.min_brake_command
-              )
-            )
-          elseif stop_context.in_no_reverse_approach then
-            state.reason = "final_brake_hold"
-            brake = math.max(
-              DEFAULTS.approach_stop_min_brake,
-              compute_brake_command(
-                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
-                DEFAULTS.approach_stop_min_brake
-              )
-            )
-          elseif switching_reverser then
-            state.reason = "recovery_reverse"
-            brake = math.max(
-              DEFAULTS.min_brake_command,
-              clamp(math.abs(speed_toward_target_mps) / DEFAULTS.reverse_brake_speed_scale_mps, 0, 1)
-            )
-          elseif stop_context.must_stop_now then
-            state.reason = "approach_stop"
-            brake = math.max(
-              DEFAULTS.min_brake_command,
-              compute_brake_command(
-                math.max(overspeed, DEFAULTS.enter_brake_margin_mps),
-                DEFAULTS.min_brake_command
-              )
-            )
-          elseif moving_away_brake_allowed then
-            state.reason = "moving_away_from_target"
-            brake = math.max(
-              DEFAULTS.min_brake_command,
-              clamp(math.abs(speed_toward_target_mps) / DEFAULTS.reverse_brake_speed_scale_mps, 0, 1)
-            )
-          else
-            state.reason = "overspeed"
-            brake = compute_brake_command(overspeed, DEFAULTS.min_brake_command)
-          end
-          local allow_brake_release_hold = state.guidance_mode == "stop"
-            or stop_context.must_stop_now
-            or stop_context.in_approach_stop
-            or stop_context.in_no_reverse_approach
-
-          if brake < DEFAULTS.brake_deadband then
-            brake = 0
-            if allow_brake_release_hold then
-              state.brake_release_until = now + DEFAULTS.brake_release_hold_s
-            else
-              state.brake_release_until = nil
-            end
-          else
-            state.brake_release_until = nil
-          end
-        else
-          state.reason = "low_target_speed"
-          runtime_context.integral = 0
-          throttle = 0
-          brake = 0
         end
       end
 
-      control = {
-        throttle = throttle,
-        reverser = state.active_reverser,
-        brake = brake,
-        independent_brake = 0,
-      }
+      if terminal_buffer_brake_active then
+        speed_plan_force_mode = "full_brake"
+        speed_plan_desired_reverser = state.active_reverser
+        planner_reason = "terminal_buffer_brake"
+        state.phase = "tracking"
+      end
+
+      if speed_plan_force_mode == "auto"
+        and target_speed_mps <= DEFAULTS.arrival_speed_mps * 2
+        and math.abs(speed_error) <= DEFAULTS.arrival_speed_mps then
+        speed_plan_force_mode = "coast"
+        if planner_reason == "speed_tracking" then
+          planner_reason = "low_target_speed"
+        end
+      end
+
+      speed_plan = make_speed_plan(
+        target_speed_mps,
+        speed_plan_desired_reverser,
+        planner_reason,
+        speed_plan_force_mode
+      )
+      state.active_reverser = speed_plan.desired_reverser
+      state.reason = speed_plan.reason
+      state.brake_release_until = nil
+
+      if speed_plan.force_mode == "full_brake" then
+        runtime_context.integral = 0
+        control = {
+          throttle = 0,
+          reverser = speed_plan.desired_reverser,
+          brake = 1,
+          independent_brake = 0,
+        }
+        state.mode = "brake"
+      elseif speed_plan.force_mode == "coast" then
+        runtime_context.integral = 0
+        control = {
+          throttle = 0,
+          reverser = speed_plan.desired_reverser,
+          brake = 0,
+          independent_brake = 0,
+        }
+        state.mode = "coast"
+      else
+        if stop_context.in_approach_stop or stop_context.in_no_reverse_approach then
+          runtime_context.integral = runtime_context.integral * profile.end_phase_integral_decay
+        end
+        local integral_limit = math.max(speed_plan.v_target_mps * 2, characteristics.cruise_mps)
+        effort_cmd, runtime_context.integral = compute_longitudinal_effort(
+          pid,
+          runtime_context.integral,
+          runtime_context.previous_error,
+          speed_error,
+          dt_s,
+          integral_limit
+        )
+        control = allocate_effort_to_controls(effort_cmd, speed_plan.desired_reverser)
+        if control.brake > 0 then
+          state.mode = "brake"
+        elseif control.throttle > 0 then
+          state.mode = "drive"
+        else
+          state.mode = "coast"
+        end
+      end
+
+      if state.phase == "reverse_launch" and math.abs(axis_speed_mps) >= DEFAULTS.axis_lock_speed_mps then
+        state.phase = "tracking"
+      end
+
+      allocated_throttle = control.throttle
+      allocated_brake = control.brake
+      if state.reason == "speed_tracking" and leg.mode == "terminal" and state.guidance_mode == "route" and buffer_target_speed_mps > 0 then
+        state.reason = "buffer_approach"
+      end
     end
 
     if runtime_context.previous_time and runtime_context.previous_speed_toward_target_mps > 0 then
@@ -3783,7 +3700,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s speed_plan_target_mps=%.2f speed_plan_force_mode=%s effort_cmd=%.3f allocated_throttle=%.2f allocated_brake=%.2f overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
@@ -3868,6 +3785,11 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         axis_speed_mps,
         motion_axis_speed_mps,
         target_speed_mps,
+        speed_plan.v_target_mps,
+        speed_plan.force_mode,
+        effort_cmd,
+        allocated_throttle,
+        allocated_brake,
         overspeed,
         desired_reverser,
         tostring(switching_reverser),
@@ -4077,6 +3999,9 @@ local exports = {
   execute_route_plan = execute_route_plan,
   buffer_approach_target_speed = buffer_approach_target_speed,
   buffer_pre_capture_target_speed = buffer_pre_capture_target_speed,
+  make_speed_plan = make_speed_plan,
+  compute_longitudinal_effort = compute_longitudinal_effort,
+  allocate_effort_to_controls = allocate_effort_to_controls,
   terminal_buffer_progress_floor = terminal_buffer_progress_floor,
   terminal_buffer_required_stop_distance_m = terminal_buffer_required_stop_distance_m,
   can_enter_stop_guidance = can_enter_stop_guidance,

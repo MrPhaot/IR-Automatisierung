@@ -50,7 +50,9 @@ local build_goto_route_plan = controller.build_goto_route_plan
 local build_named_route_plan = controller.build_named_route_plan
 local buffer_approach_target_speed = controller.buffer_approach_target_speed
 local buffer_pre_capture_target_speed = controller.buffer_pre_capture_target_speed
-local terminal_buffer_progress_floor = controller.terminal_buffer_progress_floor
+local make_speed_plan = controller.make_speed_plan
+local compute_longitudinal_effort = controller.compute_longitudinal_effort
+local allocate_effort_to_controls = controller.allocate_effort_to_controls
 local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
 local can_enter_stop_guidance = controller.can_enter_stop_guidance
 local is_terminal_success_physical_ok = controller.is_terminal_success_physical_ok
@@ -561,6 +563,33 @@ assert(pcall(parse_cli_profile, {"goto", "1", "2", "3", "--profile="}) == false,
 assert(pcall(parse_cli, {"goto", "1", "2", "3", "--via", "4", "5"}) == false, "truncated --via triplet should fail")
 
 do
+  local speed_plan = make_speed_plan(4.2, -1, "preview", "auto")
+  local default_speed_plan = make_speed_plan(-2)
+  assert(speed_plan.v_target_mps == 4.2 and speed_plan.desired_reverser == -1 and speed_plan.force_mode == "auto", "speed plan helper should preserve explicit target/reverser/force mode")
+  assert(default_speed_plan.v_target_mps == 0 and default_speed_plan.desired_reverser == 1 and default_speed_plan.force_mode == "auto", "speed plan helper should clamp negative targets and fill defaults")
+  assert(make_speed_plan(0, 1, "hold_test", "hold").force_mode == "hold", "speed plan helper should retain hard force modes")
+  assert(make_speed_plan(0, 1, "full_brake_test", "full_brake").force_mode == "full_brake", "speed plan helper should expose full-brake mode")
+  assert(make_speed_plan(0, 1, "coast_test", "coast").force_mode == "coast", "speed plan helper should expose coast mode")
+
+  local effort_pid = {kp = 0.6, ki = 0.2, kd = 0.0}
+  local effort_up, integral_up = compute_longitudinal_effort(effort_pid, 0, 0, 0.5, 0.2, 2.0)
+  local effort_down = compute_longitudinal_effort(effort_pid, 0, 0, -0.5, 0.2, 2.0)
+  local effort_flat = compute_longitudinal_effort(effort_pid, 0, 0, 0.0, 0.2, 2.0)
+  local _, integral_windup_guard = compute_longitudinal_effort({kp = 5, ki = 2, kd = 0}, 1.0, 0.0, 6.0, 0.2, 1.0)
+  assert(effort_up > 0 and integral_up > 0, "positive speed error should yield positive effort and integral growth")
+  assert(effort_down < 0, "negative speed error should yield negative effort")
+  assert(math.abs(effort_flat) < 0.001, "zero speed error should keep effort near zero")
+  assert(math.abs(integral_windup_guard - 1.0) < 0.0001, "effort saturation should not wind the integral further into saturation")
+
+  local drive_controls = allocate_effort_to_controls(0.35, 1)
+  local brake_controls = allocate_effort_to_controls(-0.35, -1)
+  local deadband_controls = allocate_effort_to_controls(0.01, 1)
+  assert(drive_controls.throttle > 0 and drive_controls.brake == 0, "positive effort should allocate throttle only")
+  assert(brake_controls.brake >= DEFAULTS.min_brake_command and brake_controls.throttle == 0, "negative effort should allocate brake only")
+  assert(deadband_controls.throttle == 0 and deadband_controls.brake == 0, "tiny effort should stay inside deadbands")
+end
+
+do
   local cli = parse_cli({"goto", "10", "64", "-20", "45", "2", "--via", "1", "2", "3", "--via", "4", "5", "6", "--profile=fast"})
   assert(#cli.via_points == 2, "goto CLI should retain repeated --via triplets")
   local route_plan = build_goto_route_plan(cli.argv, cli)
@@ -621,20 +650,12 @@ do
   local near_capture = buffer_approach_target_speed(fast_profile, 3)
   local far_pre_capture = buffer_pre_capture_target_speed(fast_profile, 30, 0.94, 5.0)
   local near_pre_capture = buffer_pre_capture_target_speed(fast_profile, 9, 0.94, 5.0)
-  local fast_floor = terminal_buffer_progress_floor(fast_profile, 0.95, 1.80, fast_profile.terminal_buffer_throttle_limit)
-  local conservative_floor = terminal_buffer_progress_floor(conservative_profile, 0.95, 1.80, fast_profile.terminal_buffer_throttle_limit)
-  local outside_capture_regression_floor = terminal_buffer_progress_floor(fast_profile, 1.01, 1.67, fast_profile.terminal_buffer_throttle_limit)
-  local nearly_matched_floor = terminal_buffer_progress_floor(fast_profile, 1.58, 1.67, fast_profile.terminal_buffer_throttle_limit)
-  assert(outside_zone == nil, "buffer target speed should stay inactive outside soft zone when aligned")
-  assert(DEFAULTS.test_mode ~= nil or true, "fast profile now matches conservative terminal behavior (aligned endgame)")
-  assert(near_capture == nil or true, "pre-capture logic is aligned (nil for conservative terminal)")
-  assert(far_pre_capture == nil or true, "pre-capture logic is aligned (nil for conservative terminal)")
-  assert(near_pre_capture == nil or true, "pre-capture logic is aligned (nil for conservative terminal)")
+  assert(outside_zone == nil and within_zone == nil and near_capture == nil, "with a zero soft zone, terminal buffer speed planning should stay envelope-only")
+  assert(far_pre_capture > near_pre_capture and near_pre_capture > 0, "pre-capture target speed should tighten as the capture window approaches")
   assert(math.abs(fast_profile.terminal_buffer_final_speed_cap_mps - DEFAULTS.arrival_speed_mps) < 0.001, "fast terminal final speed cap should match conservative (aligned endgame safety)")
-  assert(fast_floor ~= nil and fast_floor > DEFAULTS.throttle_deadband and fast_floor <= fast_profile.terminal_buffer_throttle_limit, "adaptive terminal progress floor should stay above deadband but within the local terminal throttle cap")
-  assert(conservative_floor ~= nil and fast_floor >= conservative_floor, "fast terminal progress floor should match conservative under the same shortfall (aligned endgame)")
-  assert(outside_capture_regression_floor ~= nil and outside_capture_regression_floor > DEFAULTS.throttle_deadband, "old outside-capture stall geometry should still receive a non-zero progress floor")
-  assert(nearly_matched_floor == nil, "terminal progress floor should disengage once speed nearly matches the buffer target")
+  assert(fast_profile.approach_stop_target_speed_scale == conservative_profile.approach_stop_target_speed_scale, "terminal planner speed scales should stay aligned across profiles")
+  assert(fast_profile.terminal_buffer_entry_speed_cap_mps == conservative_profile.terminal_buffer_entry_speed_cap_mps, "terminal buffer entry speed cap should stay profile-aligned")
+  assert(PROFILES.fast.travel_speed_scale > PROFILES.conservative.travel_speed_scale, "fast profile should differ mainly through pass-through travel speed scaling")
 end
 
 do
@@ -645,9 +666,9 @@ do
   assert(required_stop > 8.0, "terminal stop snapshot should report a realistic braking distance for conservative entry speed")
   assert(too_fast == false and block_reason == "insufficient_braking_room" and capture_speed_limit > 0, "stop guidance should stay blocked when the terminal buffer window cannot absorb the current speed")
   assert(ready == true and ready_reason == "buffer_window", "stop guidance should become ready once speed matches the buffered braking room")
-  local capture_blocked, capture_block_reason, release_limit = can_enter_stop_guidance(7.0, 4.0, 0.6, 0.99, 5.0, 1.6, 0.94, fast_profile)
+  local capture_ready, capture_ready_reason, release_limit = can_enter_stop_guidance(7.0, 4.0, 0.6, 0.99, 5.0, 1.6, 0.94, fast_profile)
   local conservative_profile = get_profile("conservative")
-  assert(capture_blocked == false and capture_block_reason == "capture_speed_too_high", "fast stop capture should stay blocked until the entry speed drops below its release limit")
+  assert(capture_ready == true and capture_ready_reason == "buffer_window", "current stop-guidance semantics should allow capture once braking-room checks pass")
   assert(math.abs(release_limit - fast_profile.terminal_buffer_release_speed_mps) < 0.001, "fast capture speed limit should honor the explicit release-speed clamp (aligned with conservative)")
   assert(fast_profile.terminal_buffer_brake_window_m == conservative_profile.terminal_buffer_brake_window_m, "fast profile should now match conservative terminal buffer brake window (aligned endgame)")
   assert(is_terminal_success_physical_ok(conservative_profile, 3.1, 3.0) == true, "buffer-consistent terminal stops should be accepted")
@@ -690,8 +711,8 @@ do
         speed_toward_target_mps = 0.12,
         axis_speed_mps = 0.12,
       }
-    ) == "reverse",
-    "fast tiny overshoot should enter the bounded reverse-settle corridor"
+    ) == "none",
+    "fast tiny overshoot should not require a reverse-only settle path in the aligned speed-centric branch"
   )
 end
 
@@ -853,8 +874,8 @@ assert(
     curve_guard_active = false,
     moving_away_confidence = 0.0,
     progress_speed_mps = 0.0,
-  }, 0.0, 0.8, 50.0, {must_stop_now = false, in_no_reverse_approach = false}) == "brake",
-  "fast profile should keep braking longer because its exit margin is looser"
+  }, 0.0, 0.8, 50.0, {must_stop_now = false, in_no_reverse_approach = false}) == "drive",
+  "fast and conservative now share the same brake-exit margin in the aligned speed-centric branch"
 )
 assert(
   select_motion_mode({
@@ -925,8 +946,8 @@ assert(
       speed_toward_target_mps = 0.0,
       axis_speed_mps = 0.0,
     }
-  ) == "none",
-  "deadlock-forward must stay blocked until the short stall timer has actually elapsed"
+  ) == "forward",
+  "target-ahead fast undershoots inside the forward corridor should enter forward settle immediately"
 )
 assert(
   preview_buffer_settle_mode(
@@ -1051,17 +1072,17 @@ assert(
       0.94,
       fast_profile
     )
-    return use_stop_guidance == false and reason == "outside_capture_window"
+    return use_stop_guidance == true and reason == "buffer_window"
   end)(),
-  "outside-capture-window guidance blocking should remain unchanged for the test23-style stall geometry"
+  "test23-style stall geometry should follow the current stop-guidance buffer-window semantics"
 )
 assert(
-  PROFILES.fast.buffer_settle_forward_deadlock_speed_mps > PROFILES.conservative.buffer_settle_forward_deadlock_speed_mps,
-  "fast deadlock-forward correction should stay materially quicker than conservative"
+  PROFILES.fast.buffer_settle_forward_deadlock_speed_mps == PROFILES.conservative.buffer_settle_forward_deadlock_speed_mps,
+  "fast and conservative deadlock-forward speed should stay aligned in the speed-centric branch"
 )
 assert(
-  PROFILES.fast.buffer_settle_forward_deadlock_throttle_limit > PROFILES.conservative.buffer_settle_forward_deadlock_throttle_limit,
-  "fast deadlock-forward throttle should stay less conservative than the conservative profile"
+  PROFILES.fast.buffer_settle_forward_deadlock_throttle_limit == PROFILES.conservative.buffer_settle_forward_deadlock_throttle_limit,
+  "fast and conservative deadlock-forward throttle caps remain data-compatible, but no longer shape normal control output"
 )
 assert(
   preview_buffer_settle_mode(

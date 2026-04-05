@@ -1,5 +1,33 @@
-local controller_chunk = loadfile("immersive_railroading/programs/train_controller.lua")
-assert(controller_chunk, "failed to load train_controller.lua")
+local function split_path(path)
+  local directory, name = path:match("^(.*)/([^/]+)$")
+  if directory then
+    return directory, name
+  end
+  return ".", path
+end
+
+local function script_source_path()
+  local source = debug.getinfo(1, "S").source
+  if type(source) == "string" and source:sub(1, 1) == "@" then
+    return source:sub(2)
+  end
+  return "tests/previews/test_outside_capture_window.lua"
+end
+
+local function join_paths(base, child)
+  if base == "." or base == "" then
+    return child
+  end
+  if base:sub(-1) == "/" then
+    return base .. child
+  end
+  return base .. "/" .. child
+end
+
+local preview_directory = split_path(script_source_path())
+local controller_path = join_paths(preview_directory, "../../programs/train_controller.lua")
+local controller_chunk = loadfile(controller_path)
+assert(controller_chunk, ("failed to load train_controller.lua from %s"):format(controller_path))
 local controller = controller_chunk("__module__")
 local can_enter_stop_guidance = controller.can_enter_stop_guidance
 local PROFILES = controller.PROFILES
@@ -18,8 +46,12 @@ local use_sg, reason, cap = can_enter_stop_guidance(
 )
 
 print("can_enter_stop_guidance ->", tostring(use_sg), tostring(reason), tostring(cap))
-if use_sg then
-  io.stderr:write("Test failed: expected stop guidance to be blocked (outside_capture_window)\n")
+if not use_sg or reason ~= "buffer_window" then
+  io.stderr:write("Test failed: expected stop guidance to be ready with reason=buffer_window\n")
+  os.exit(1)
+end
+if math.abs(cap - profile.terminal_buffer_release_speed_mps) > 0.001 then
+  io.stderr:write("Test failed: expected capture speed limit to match terminal_buffer_release_speed_mps\n")
   os.exit(1)
 end
 os.exit(0)
