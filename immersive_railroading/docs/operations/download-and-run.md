@@ -60,6 +60,32 @@ Why this matters:
 - Intermediate `--via` points are pass-through geometry only; only the final waypoint uses the terminal stop envelope.
 - `route_book.lua` ships as an empty schema, so `trainctl route <name>` only works after you add your own stations and routes for this save.
 
+## Station Dispatcher Invocation
+From `/home/immersive_railroading/programs`:
+
+```sh
+lua station_dispatch.lua run ore_loop --log=station_dispatch.log
+lua station_dispatch.lua validate
+lua station_dispatch.lua inspect ore_loop
+lua station_dispatch.lua detectors
+```
+
+Why this stays separate:
+- `train_controller.lua` still owns only local motion control along a chosen route
+- `station_dispatch.lua` owns schedule order, detector waits, and station-side redstone outputs
+
+## Route Book Editor Invocation
+From `/home/immersive_railroading/programs`:
+
+```sh
+lua route_book_editor.lua
+```
+
+Editor direction:
+- mouse is the primary interaction path
+- tabs cover detectors, stations, routes, schedules, and save/validate
+- keyboard use is limited to prompted text entry plus terminal escape/interrupt behavior
+
 ## Test-World Log Location
 
 The current OpenComputers test machine writes logs under a path shaped like:
@@ -68,34 +94,29 @@ The current OpenComputers test machine writes logs under a path shaped like:
 
 Useful real example logs found under that pattern:
 - `train_controller.log`
-- `reverse_test.log`
-- `reverse_test1.log`
-- `reverse_test3.log`
-- `reverse_test4.log`
-- `reverse_test5.log`
-- `reverse_test7.log`
-- `reverse_test8.log`
-- `reverse_test10.log`
-- `reverse_test11.log`
-- `reverse_test12.log`
-- `reverse_test13.log`
-- `reverse_test14.log`
-- `reverse_test15.log`
-- `reverse_test16.log`
+- `station_dispatch.log`
+- `path_test37.log`
+- `path_test38.log`
+- additional `path_test*.log` and earlier `reverse_test*.log` files from older controller phases
 
 That directory pattern is inspect-only for this project, but it is the quickest place to verify what `--log` captured during an in-game run.
 
 Current interpretation of those reference logs:
-- `reverse_test3.log` and `reverse_test5.log` are the main straight-line reference runs; they reach the target but were used to tune remaining overshoot in the last meters.
-- `reverse_test4.log` is a curve-target case and should be treated as a documented V1 limitation, not the baseline acceptance test for the straight-line controller.
-- `reverse_test7.log` demonstrated that small near-target roll-away must still stop first instead of immediately flipping into reverse recovery.
-- `reverse_test8.log` captures the follow-up edge case: after stop-first, the controller must either accept a small residual miss as near-target arrival or start only a tiny correction move, rather than deadlocking a few meters short.
-- `reverse_test10.log` highlighted the next refinement: after `stop_first`, the controller must let a valid micro-correction actually leave brake mode instead of staying in a `brake=0`, `throttle=0` deadlock.
-- `reverse_test11.log` is the same scenario with `stop_buffer_m=1`; it makes it easier to see when the residual miss is already too large for a micro-correction and should be logged as a V1 limit instead.
-- `reverse_test12.log` and `reverse_test13.log` showed the next tuning target: the default profile should brake early enough that straight-line arrivals do not need to fall back to reverse recovery in the first place.
-- `reverse_test14.log` is the main conservative-profile under-target reference: it brakes early enough to avoid reverse, but then stops too far short and must transition into a very slow final forward crawl instead of deadlocking.
-- `reverse_test15.log` is the current good `fast`-profile straight-line reference with `stop_buffer_m=3`.
-- `reverse_test16.log` contains both `stop_buffer_m=1` profile runs, so it is the main side-by-side comparison for how `fast` and `conservative` diverge under a tighter stop point.
+- Current controller reference family as of commit `a67fcee`: `path_test*.log`.
+- `path_test37.log` and `path_test38.log` are the verified terminal examples for the speed-centric branch at commit `a67fcee`.
+- The current logs include both the speed-centric longitudinal signals and the terminal guidance diagnostics in the same line stream, including:
+  - `speed_plan_limit_mps`
+  - `speed_plan_command_mps`
+  - `speed_plan_target_mps`
+  - `speed_plan_force_mode`
+  - `terminal_speed_commit_active`
+  - `d_term_active`
+  - `effort_cmd`
+  - `allocated_throttle`
+  - `allocated_brake`
+  - `stop_guidance_entry_margin_m`
+  - `stop_guidance_required_stop_m`
+- Older `reverse_test*.log` files remain useful historical evidence for earlier phases, but for commit `a67fcee` they are no longer the main baseline for current controller behavior.
 
 ## Dev Note
 
@@ -103,7 +124,9 @@ The current local developer machine uses this exact path:
 
 `~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/TEST (1)/opencomputers/6999b5c9-34da-42d3-9ab9-c02972b55cfc/home/immersive_railroading/programs/`
 
-That exact path and file inventory are useful for local debugging, but the portable directory pattern above is the stable documentation target.
+That exact hashed path is the current program path for the active OpenComputers machine.
+The parent `opencomputers/` directory may also contain older non-hashed logs from earlier phases, so both locations can be relevant during local debugging.
+The portable directory pattern above remains the stable documentation target.
 
 ## Safety Notes
 - The installer rejects:

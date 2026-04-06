@@ -1,18 +1,10 @@
--- Route coordinates are world-specific, so V1 ships only the station-first schema.
+-- Coordinates, detector ids, and schedules are save-specific, so the shipped
+-- route book stays empty while preserving the frozen V1 schema.
 return {
-  STATIONS = {
-    ["1"] = {x = 427, y = 64, z = -148},
-    ["2"] = {x = 238, y = 64, z = -77}
+  AUGMENTS = {
+    DETECTORS = {},
   },
-  ROUTES = {
-    ["1_zu_2"] = {
-      waypoints = {
-        "1",
-        {x = 398, y = 64, z = -210},
-        "2"
-      },
-      cruise_kmh = 55,
-      stop_buffer_m = 3
-    }
-  }
+  STATIONS = {},
+  ROUTES = {},
+  SCHEDULES = {},
 }

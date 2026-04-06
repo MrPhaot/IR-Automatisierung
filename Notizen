@@ -27,3 +27,33 @@ wget -f https://raw.githubusercontent.com/MrPhaot/IR-Automatisierung/RoutenStati
 trainctl goto 238 64 -77 55 1 --log=reverse_test18.log
 trainctl goto 238 64 -77 55 6 --log=reverse_test19.log
 trainctl goto 238 64 -77 55 9 --log=reverse_test20.log
+
+Du bist ein Experte in Lua und OpenComputers in der Minecraft-Version 1.7.10. Du kennst dich außerdem sehr gut mit Immersive Railroading sowie seinen Automatitierungsmöglichkeiten aus. Du setztst die Arbeit des anderen Agenten fort. Den aktuellen Stand des Projekt sowie seine Details bitte den Dokus entnehmen. Lies dafür zuerst AGENTS.md. 
+Danach musst du den Zugfahrplan a la Factorio, somit auch Stationen implementieren. Das System muss folgende Vorgaben erfüllen:
+- route_book.lua enthält sowohl den Pfad (Koordinaten; der aktuelle Stand) als auch die Stationsbedingungen (für Abreise). Siehe für die Bedingungen und Fahrplan den Abschnitt "https://wiki.factorio.com/Railway#:~:text=Train%20schedule,-The" als Inspiration.
+- man soll über eine (Terminal-)GUI den Fahrplan gestalten können, nicht primär durch direktes Editing
+- Beispiel für Syntax in route_book.lua:
+`return {
+  STATIONS = {
+    ["1"] = {x = 427, y = 64, z = -148},
+    ["2"] = {x = 238, y = 64, z = -77}
+  },
+  ROUTES = {
+    ["1_zu_2"] = {
+      waypoints = {
+        "1",
+        {x = 398, y = 64, z = -210},
+        "2"
+      },
+      cruise_kmh = 55,
+      stop_buffer_m = 3,
+      profile="fast"
+    }
+  }
+}`
+- denk daran, dass die Routennamen als Tags für spätere Navigation über Kreuzungen benutzt sein werden. Wie das Tagsystem und Graphentheorie dafür benutzt werden können, siehe "https://youtu.be/mWDbIdRqIig?si=vQUyAy8UxET1co3q". WICHTIG: Dies noch nicht implementieren, sondern nur im Hinterkopf bei den Architektur-/Codeentscheidungen beibehalten.
+
+Gib mir den Plan nur dann, wenn:
+- er ist vollständig und braucht keine weitere Ergänzungen, etwa Codestücke oder technische Details
+- die Implementierungsvorschläge wurden überprüft und getestet und sind fehlerfrei
+- der Plan wird einen Hand-Off-Markdown erstellen, der alle nötigen Infos/Kontext für einen anderen Agenten in einer separaten Session enthält; dafür wird auch ein Prompt im Einklang mit Context Engineering benötigt

@@ -6,7 +6,12 @@ That separation is intentional:
 - `train_controller.lua` owns local motion control only
 - future `signal_reservation.lua` should own block claims and releases
 - future `junction_controller.lua` should own switch alignment and locking
-- future `station_dispatch.lua` should own stop sequencing and station handoff
+- `station_dispatch.lua` now owns schedule waits, detector checks, and station-side redstone handoff
+
+Still intentionally outside V1:
+- no block reservation coupling
+- no graph/junction implementation
+- no redstone input waits
 
 Reference reservation shape kept stable for later sessions:
 

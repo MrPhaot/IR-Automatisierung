@@ -9,11 +9,23 @@
 
 ## Speed-Centric Longitudinal Split
 - The controller now separates planning/state from actuator output:
-  - planner/state machine decides `v_target_mps`, desired reverser, and hard force mode (`auto`, `coast`, `full_brake`, `hold`)
+  - planner/state machine decides the current `speed_limit_mps`, desired reverser, and hard force mode (`auto`, `coast`, `full_brake`, `hold`)
+  - terminal commit logic derives a trackable `speed_command_mps` from that limit
   - one signed longitudinal controller computes effort from speed error in `auto`
   - one allocator maps signed effort to throttle-only or brake-only output
-- Normal driving no longer shapes behavior with throttle caps, throttle floors, or profile-specific throttle clamps.
+- `speed_plan_target_mps` still appears in logs as a compatibility alias, but it is no longer the only meaningful speed-plan field.
+- In the production route path `execute_route_plan(...) -> run_route_leg(...)`, normal driving no longer shapes behavior with throttle caps, throttle floors, or profile-specific throttle clamps.
+- `control_loop(...)` still exists as a legacy path and still contains older throttle-limit logic, so documentation should not describe the whole file as uniformly migrated.
 - Terminal safety still comes from the speed envelope, stop-guidance state, and failure serialization logic.
+
+## Current Terminal Control Path
+- The production terminal path filters measured progress speed into `controller_speed_mps` before it enters the longitudinal controller.
+- Once the run enters a committed stop, `terminal_speed_command_mps` becomes monotone non-increasing so the planner cannot raise the commanded stop speed again mid-stop.
+- The terminal controller freezes a dedicated PID basis from `terminal_brake_snapshot_mps2` instead of letting late brake-learning drift reshape the stop response.
+- The derivative term is disabled for terminal legs.
+- Terminal effort is further cleaned up before actuation:
+  - effort is phase-limited for route terminal, committed stop, and final low-speed stop
+  - effort slew is rate-limited before `allocate_effort_to_controls(...)`
 
 ## Why The PID Baseline Is Physics-Derived
 - A fixed gain set would only match one train.
@@ -43,7 +55,8 @@ local kd = kp * math.min(t_drive, t_brake)
 - This is safer than trying to brake only when already near the target.
 - `stop_buffer_m` is now handled in two stages: during the normal terminal approach it acts as remaining distance to the physical target, and only late in the end approach does the controller freeze a final stop axis and convert that buffer into an explicit halting point.
 - Why: this keeps the older curve-following behavior alive on known-good end curves instead of letting an early fixed stop axis drag the train into oscillation before the real final entry is complete.
-- The default `conservative` profile intentionally scales that end-phase envelope down further so the train is more likely to stop without any reverse recovery on straight target runs.
+- Stop-guidance entry now uses its own margin `stop_guidance_entry_margin_m`, which is separate from the broader `required_stop_margin_m` used by no-reverse and stop-now safety envelopes.
+- The default `conservative` profile intentionally keeps a tighter stop-guidance entry margin and a more cautious end-phase envelope so the train is more likely to stop without any reverse recovery on straight target runs.
 - The last meters now add a conservative `approach_stop` phase before the final arrival window so the train is pushed into braking early enough on straight runs instead of relying on one late overspeed trigger.
 - Near-target overshoots now follow a `stop_first` rule: brake to a real halt first, then either accept a small residual miss as `near_target_arrival` or allow only a very small correction move.
 - That near-target resolution is intentionally split into phases: `stop_first` handles the stop itself, then a second decision chooses `near_target_arrival`, a limited `near_target_correction`, or a logged V1 limit if the residual miss is already too large for a tiny correction.
@@ -52,8 +65,8 @@ local kd = kp * math.min(t_drive, t_brake)
 ## Profile Modes
 
 - `conservative` is the default profile when no explicit flag is passed to `trainctl goto`.
-- `conservative` prioritizes minimal or zero overshoot by braking earlier, clamping target speed harder in the final approach, and preferring a very slow forward recovery over any reverse recovery when the train ends up stopping short.
-- `fast` differs primarily by a higher pass-through travel speed scale; terminal endgame speed planning remains aligned with `conservative` in this redesign branch.
+- `conservative` prioritizes minimal or zero overshoot by braking earlier, entering stop guidance under a stricter margin, clamping target speed harder in the final approach, and preferring a very slow forward recovery over any reverse recovery when the train ends up stopping short.
+- `fast` differs primarily by a higher pass-through travel speed scale and a looser stop-guidance entry margin; the terminal controller architecture itself remains shared.
 
 ## Why Distance And Motion Axis Are Now Separate
 

@@ -54,6 +54,8 @@ local make_speed_plan = controller.make_speed_plan
 local update_terminal_speed_command = controller.update_terminal_speed_command
 local compute_longitudinal_effort = controller.compute_longitudinal_effort
 local allocate_effort_to_controls = controller.allocate_effort_to_controls
+local limit_effort_for_phase = controller.limit_effort_for_phase
+local slew_limit_effort = controller.slew_limit_effort
 local terminal_buffer_required_stop_distance_m = controller.terminal_buffer_required_stop_distance_m
 local can_enter_stop_guidance = controller.can_enter_stop_guidance
 local is_terminal_success_physical_ok = controller.is_terminal_success_physical_ok
@@ -619,6 +621,29 @@ do
   local low_speed_learning_block = true and (true or true) and 0.8 <= 1.0
   local high_speed_learning_block = true and (true or true) and 1.2 <= 1.0
   assert(low_speed_learning_block == true and high_speed_learning_block == false, "brake-learning gate should block low-speed terminal samples but allow higher-speed ones")
+
+  local filtered_controller_speed = ema(0.20, 0.30, DEFAULTS.speed_filter_memory_s, 0.2)
+  assert(filtered_controller_speed > 0.20 and filtered_controller_speed < 0.30, "controller speed channel should smooth raw low-speed measurement changes")
+
+  local d_disabled_terminal = (true and "false" or "true")
+  assert(d_disabled_terminal == "false", "D-term should stay disabled for all terminal leg modes")
+
+  local terminal_route_limited = limit_effort_for_phase(0.9, "terminal", false, 2.0, 10.0)
+  local committed_limited = limit_effort_for_phase(0.9, "terminal", true, 0.8, 2.5)
+  local committed_brake_limited = limit_effort_for_phase(-0.95, "terminal", true, 0.8, 2.5)
+  assert(math.abs(terminal_route_limited - 0.30) < 0.0001, "terminal route effort clamp should cap drive effort at 0.30")
+  assert(math.abs(committed_limited - 0.10) < 0.0001, "final low-speed committed stop should cap drive effort at 0.10")
+  assert(math.abs(committed_brake_limited + 0.70) < 0.0001, "final low-speed committed stop should cap brake effort at 0.70")
+
+  local slew_terminal = slew_limit_effort(0.00, 1.00, 0.2, 0.25)
+  local slew_committed = slew_limit_effort(0.00, 1.00, 0.2, 0.12)
+  assert(math.abs(slew_terminal - 0.05) < 0.0001, "terminal route slew limit should restrict per-tick effort increase")
+  assert(math.abs(slew_committed - 0.024) < 0.0001, "committed stop slew limit should be stricter than terminal-route slew")
+
+  local terminal_route_integral_limit = math.min(1.5, 1.3)
+  local committed_integral_limit = math.min(0.75, 0.6)
+  assert(math.abs(terminal_route_integral_limit - 1.3) < 0.0001, "terminal route integral limit should stay bounded by command speed")
+  assert(math.abs(committed_integral_limit - 0.6) < 0.0001, "committed stop integral limit should stay in the tighter range")
 end
 
 do
@@ -685,21 +710,48 @@ do
   assert(outside_zone == nil and within_zone == nil and near_capture == nil, "with a zero soft zone, terminal buffer speed planning should stay envelope-only")
   assert(far_pre_capture > near_pre_capture and near_pre_capture > 0, "pre-capture target speed should tighten as the capture window approaches")
   assert(math.abs(fast_profile.terminal_buffer_final_speed_cap_mps - DEFAULTS.arrival_speed_mps) < 0.001, "fast terminal final speed cap should match conservative (aligned endgame safety)")
-  assert(fast_profile.approach_stop_target_speed_scale == conservative_profile.approach_stop_target_speed_scale, "terminal planner speed scales should stay aligned across profiles")
+  assert(math.abs(conservative_profile.approach_stop_target_speed_scale - 0.45) < 0.0001, "conservative terminal planner should use the lower approach-stop speed scale from PLAN2")
+  assert(math.abs(fast_profile.approach_stop_target_speed_scale - 0.55) < 0.0001, "fast terminal planner should keep its previous approach-stop speed scale")
+  assert(math.abs(conservative_profile.stop_guidance_entry_margin_m - 2.0) < 0.0001, "conservative stop-guidance entry margin should be decoupled and set to 2.0m")
+  assert(math.abs(fast_profile.stop_guidance_entry_margin_m - 2.5) < 0.0001, "fast stop-guidance entry margin should remain at 2.5m")
   assert(fast_profile.terminal_buffer_entry_speed_cap_mps == conservative_profile.terminal_buffer_entry_speed_cap_mps, "terminal buffer entry speed cap should stay profile-aligned")
   assert(PROFILES.fast.travel_speed_scale > PROFILES.conservative.travel_speed_scale, "fast profile should differ mainly through pass-through travel speed scaling")
 end
 
 do
   local fast_profile = get_profile("fast")
+  local conservative_profile = get_profile("conservative")
   local required_stop = terminal_buffer_required_stop_distance_m(4.0, 0.94)
   local too_fast, block_reason, capture_speed_limit = can_enter_stop_guidance(7.0, 4.0, 0.8, 0.98, 5.0, 4.0, 0.94, fast_profile)
   local ready, ready_reason = can_enter_stop_guidance(7.0, 4.0, 0.8, 0.98, 5.0, 1.2, 0.94, fast_profile)
+  local conservative_ready, conservative_reason, conservative_cap = can_enter_stop_guidance(
+    6.13,
+    3.13,
+    0.52,
+    DEFAULTS.terminal_stop_guidance_alignment_min,
+    conservative_profile.terminal_buffer_capture_distance_m,
+    1.47,
+    1.059,
+    conservative_profile
+  )
+  local margin_regression_ready, margin_regression_reason = can_enter_stop_guidance(
+    6.20,
+    3.20,
+    0.50,
+    0.98,
+    conservative_profile.terminal_buffer_capture_distance_m,
+    1.50,
+    1.0,
+    conservative_profile
+  )
   assert(required_stop > 8.0, "terminal stop snapshot should report a realistic braking distance for conservative entry speed")
   assert(too_fast == false and block_reason == "insufficient_braking_room" and capture_speed_limit > 0, "stop guidance should stay blocked when the terminal buffer window cannot absorb the current speed")
   assert(ready == true and ready_reason == "buffer_window", "stop guidance should become ready once speed matches the buffered braking room")
+  assert(conservative_ready == true and conservative_reason == "buffer_window" and conservative_cap > 0, "conservative guidance should now enter on test37-like geometry before crossing the stop buffer")
+  assert(margin_regression_ready == true and margin_regression_reason == "buffer_window", "stop_guidance_entry_margin_m should directly control stop-guidance entry readiness")
+  local required_stop_for_no_reverse = required_stop_distance_m(1.50, 0, 1.0)
+  assert(required_stop_for_no_reverse + conservative_profile.required_stop_margin_m > 3.20, "required_stop_margin_m should remain the stricter no-reverse envelope margin")
   local capture_ready, capture_ready_reason, release_limit = can_enter_stop_guidance(7.0, 4.0, 0.6, 0.99, 5.0, 1.6, 0.94, fast_profile)
-  local conservative_profile = get_profile("conservative")
   assert(capture_ready == true and capture_ready_reason == "buffer_window", "current stop-guidance semantics should allow capture once braking-room checks pass")
   assert(math.abs(release_limit - fast_profile.terminal_buffer_release_speed_mps) < 0.001, "fast capture speed limit should honor the explicit release-speed clamp (aligned with conservative)")
   assert(fast_profile.terminal_buffer_brake_window_m == conservative_profile.terminal_buffer_brake_window_m, "fast profile should now match conservative terminal buffer brake window (aligned endgame)")

@@ -4,6 +4,7 @@
 - `component.ir_remote_control`
 - `component.ir_augment_detector`
 - `component.ir_augment_control`
+- `component.redstone`
 
 ## Confirmed Remote-Control Methods
 - `info()`
@@ -24,6 +25,34 @@ The bundled wiki text in `ImmersiveRailroading-1.7.10-forge-1.10.0.jar` document
 - event `ir_train_overhead`
 
 It does not document the remote-control card payload returned by `info()`.
+
+## Confirmed Schedule V1 Detector Facts
+- detector `CommonAPI.info()` exposes wagon-related wait metrics used by V1:
+  - `cargo_percent`
+  - `cargo_size`
+  - `fluid_amount`
+  - `fluid_max`
+  - `passengers`
+- detector `CommonAPI.consist()` does not expose a full wagon list
+- `ir_train_overhead` currently arrives as:
+  - `event_name`
+  - `net_address`
+  - `augment_type`
+  - `stock_uuid`
+
+Implementation consequence:
+- wagon-related schedule waits must stay on `ir_augment_detector.info()`
+- `station_dispatch.lua` treats `ir_train_overhead` only as transient runtime metadata and does not persist `last_stock_uuid` or `last_seen`
+
+## Confirmed Schedule V1 Redstone Facts
+- local OpenComputers redstone support confirmed:
+  - `getInput`
+  - `getOutput`
+  - `setOutput`
+
+Implementation consequence:
+- station schedules may drive output-only redstone in V1
+- redstone input remains intentionally out of scope
 
 ## Confirmed Runtime Fields From Real `inspect`
 Observed on the OpenComputers test machine:
@@ -53,13 +82,22 @@ Those fields are now preferred over older conservative fallbacks when deriving c
 
 ## Speed-Centric Runtime Signals
 - Route execution now logs a planner/allocator split for longitudinal control:
+  - `speed_plan_limit_mps`
+  - `speed_plan_command_mps`
   - `speed_plan_target_mps`
   - `speed_plan_force_mode`
+  - `terminal_speed_commit_active`
+  - `d_term_active`
   - `effort_cmd`
   - `allocated_throttle`
   - `allocated_brake`
+- `speed_plan_target_mps` is kept as a compatibility alias while log readers migrate; the real planner split is `speed_plan_limit_mps` plus `speed_plan_command_mps`.
 - `speed_plan_force_mode` is limited to `auto`, `coast`, `full_brake`, and `hold`.
-- Terminal diagnostics remain unchanged in scope (for example stop-guidance entry reason, settle state, failure arming, and deadlock timing), so safety analysis still uses the same channels as before.
+- Terminal diagnostics now also expose the stop-guidance gate directly:
+  - `stop_guidance_entry_margin_m`
+  - `stop_guidance_required_stop_m`
+- `stop_guidance_entry_margin_m` is now its own planner threshold and is no longer implicitly identical to `required_stop_margin_m`.
+- Terminal diagnostics remain otherwise unchanged in scope, so safety analysis still uses the same channels as before.
 
 ## Observed Mismatch To Keep In Mind
 - Plan requirement: derive PID scales from train characteristics.
