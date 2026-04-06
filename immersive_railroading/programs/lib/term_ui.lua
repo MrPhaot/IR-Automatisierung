@@ -34,6 +34,15 @@ function M.button(id, label, x, y, width)
 end
 
 function M.hit(rect, px, py)
+  if type(rect) ~= "table"
+    or type(rect.x) ~= "number"
+    or type(rect.y) ~= "number"
+    or type(rect.width) ~= "number"
+    or type(rect.height) ~= "number"
+    or type(px) ~= "number"
+    or type(py) ~= "number" then
+    return false
+  end
   return px >= rect.x and px < rect.x + rect.width and py >= rect.y and py < rect.y + rect.height
 end
 
@@ -103,15 +112,51 @@ function M.render_buttons(buffer, buttons)
 end
 
 function M.flush(term_api, gpu_api, width, height, buffer)
-  if gpu_api and type(gpu_api.fill) == "function" then
-    gpu_api.fill(1, 1, width, height, " ")
-  elseif term_api and type(term_api.clear) == "function" then
-    term_api.clear()
+  M._frame_cache = M._frame_cache or {
+    width = nil,
+    height = nil,
+    lines = {},
+  }
+
+  local full_lines = {}
+  for y = 1, height do
+    full_lines[y] = string.rep(" ", width)
   end
+
   for _, row in ipairs(buffer) do
-    if term_api and type(term_api.setCursor) == "function" and type(io.write) == "function" then
-      term_api.setCursor(row.x, row.y)
-      io.write(row.text)
+    if type(row.x) == "number" and type(row.y) == "number" and type(row.text) == "string"
+      and row.y >= 1 and row.y <= height and row.x <= width then
+      local x = math.max(row.x, 1)
+      local text = row.text
+      if x + #text - 1 > width then
+        text = text:sub(1, width - x + 1)
+      end
+      local line = full_lines[row.y]
+      full_lines[row.y] = line:sub(1, x - 1) .. text .. line:sub(x + #text)
+    end
+  end
+
+  local cache_invalid = M._frame_cache.width ~= width or M._frame_cache.height ~= height
+  if cache_invalid then
+    M._frame_cache = {
+      width = width,
+      height = height,
+      lines = {},
+    }
+    if gpu_api and type(gpu_api.fill) == "function" then
+      gpu_api.fill(1, 1, width, height, " ")
+    elseif term_api and type(term_api.clear) == "function" then
+      term_api.clear()
+    end
+  end
+
+  for y = 1, height do
+    if M._frame_cache.lines[y] ~= full_lines[y] then
+      if term_api and type(term_api.setCursor) == "function" and type(io.write) == "function" then
+        term_api.setCursor(1, y)
+        io.write(full_lines[y])
+      end
+      M._frame_cache.lines[y] = full_lines[y]
     end
   end
 end

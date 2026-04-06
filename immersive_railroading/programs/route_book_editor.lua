@@ -542,19 +542,27 @@ local function run()
   local state = new_state()
   local gpu = component and component.gpu or nil
   local width, height = 100, 32
+  local screen
+  local needs_render = true
   if gpu and type(gpu.getResolution) == "function" then
     width, height = gpu.getResolution()
   end
 
   while true do
-    local screen = build_screen(state, width, height)
-    term_ui.flush(term, gpu, width, height, screen.buffer)
+    if needs_render or not screen then
+      screen = build_screen(state, width, height)
+      term_ui.flush(term, gpu, width, height, screen.buffer)
+      needs_render = false
+    end
+
     local signal = {event and event.pull() or io.read()}
-    if signal[1] == "interrupted" or signal[1] == "key_down" and signal[4] == 1 then
+    if signal[1] == "interrupted" or (signal[1] == "key_down" and signal[4] == 1) then
       return true
     end
     if signal[1] == "touch" then
-      handle_click(state, signal[3], signal[4], screen)
+      if handle_click(state, signal[3], signal[4], screen) then
+        needs_render = true
+      end
     end
   end
 end
