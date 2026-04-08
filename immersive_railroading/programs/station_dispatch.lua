@@ -51,6 +51,13 @@ local function safe_require(name)
   return nil
 end
 
+local function fresh_require(name)
+  if package and package.loaded then
+    package.loaded[name] = nil
+  end
+  return require(name)
+end
+
 local SCRIPT_DIR = split_path(script_source_path())
 ensure_package_path(SCRIPT_DIR)
 
@@ -58,10 +65,10 @@ local component = rawget(_G, "component") or safe_require("component")
 local computer = rawget(_G, "computer") or safe_require("computer")
 local event = safe_require("event")
 
-local route_book_store = require("lib.route_book_store")
-local augment_registry = require("lib.augment_registry")
-local station_schedule = require("lib.station_schedule")
-local redstone_io = require("lib.redstone_io")
+local route_book_store = fresh_require("lib.route_book_store")
+local augment_registry = fresh_require("lib.augment_registry")
+local station_schedule = fresh_require("lib.station_schedule")
+local redstone_io = fresh_require("lib.redstone_io")
 
 local controller_chunk = assert(loadfile(join_paths(SCRIPT_DIR, "train_controller.lua")))
 local train_controller = controller_chunk("__module__")

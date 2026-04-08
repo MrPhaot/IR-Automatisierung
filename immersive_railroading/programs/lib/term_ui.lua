@@ -1,4 +1,14 @@
-local M = {}
+local M = {
+  API_VERSION = 2,
+}
+local component = (function()
+  local ok, value = pcall(require, "component")
+  if ok then
+    return value
+  end
+  return nil
+end)()
+local oc_proxy = require("lib.oc_proxy")
 
 local function as_positive_integer(value)
   if type(value) ~= "number" then
@@ -200,41 +210,12 @@ function M.render_buttons(buffer, buttons)
   return targets
 end
 
-local function clear_screen(gpu_api, term_api, width, height)
-  if gpu_api and type(gpu_api.fill) == "function" then
-    gpu_api.fill(1, 1, width, height, " ")
-    return
-  end
-  if term_api and type(term_api.clear) == "function" then
-    term_api.clear()
-  end
-end
-
-local function write_line(term_api, gpu_api, y, line)
-  if gpu_api and type(gpu_api.set) == "function" then
-    gpu_api.set(1, y, line)
-    return
-  end
-  if term_api and type(term_api.setCursor) == "function" then
-    term_api.setCursor(1, y)
-    if type(term_api.write) == "function" then
-      term_api.write(line)
-    end
-  end
-end
-
-function M.flush(term_api, gpu_api, width, height, buffer)
+function M.render_lines(width, height, buffer)
   width = as_positive_integer(width)
   height = as_positive_integer(height)
   if not width or not height then
-    return
+    return {}
   end
-
-  M._frame_cache = M._frame_cache or {
-    width = nil,
-    height = nil,
-    lines = {},
-  }
 
   local full_lines = {}
   for y = 1, height do
@@ -260,22 +241,79 @@ function M.flush(term_api, gpu_api, width, height, buffer)
     end
   end
 
-  local cache_invalid = M._frame_cache.width ~= width or M._frame_cache.height ~= height
+  return full_lines
+end
+
+function M.reset_cache()
+  M._frame_cache = nil
+end
+
+local function clear_screen(gpu_api, width, height, origin_x, origin_y)
+  local ok, result = oc_proxy.invoke(component, gpu_api, "fill", origin_x, origin_y, width, height, " ")
+  if ok then
+    return true
+  end
+  return nil, tostring(result or "gpu fill failed")
+end
+
+local function write_line(gpu_api, x, y, line)
+  local ok, result = oc_proxy.invoke(component, gpu_api, "set", x, y, line)
+  if ok then
+    return true
+  end
+  return nil, tostring(result or "gpu set failed")
+end
+
+function M.flush(term_api, gpu_api, width, height, buffer, origin_x, origin_y)
+  width = as_positive_integer(width)
+  height = as_positive_integer(height)
+  origin_x = as_positive_integer(origin_x) or 1
+  origin_y = as_positive_integer(origin_y) or 1
+  if not width or not height then
+    return nil, "invalid frame size"
+  end
+  if not oc_proxy.can_invoke(component, gpu_api, "set") then
+    return nil, "active gpu required for fullscreen ui"
+  end
+
+  M._frame_cache = M._frame_cache or {
+    width = nil,
+    height = nil,
+    origin_x = nil,
+    origin_y = nil,
+    lines = {},
+  }
+
+  local full_lines = M.render_lines(width, height, buffer)
+  local cache_invalid = M._frame_cache.width ~= width
+    or M._frame_cache.height ~= height
+    or M._frame_cache.origin_x ~= origin_x
+    or M._frame_cache.origin_y ~= origin_y
   if cache_invalid then
     M._frame_cache = {
       width = width,
       height = height,
+      origin_x = origin_x,
+      origin_y = origin_y,
       lines = {},
     }
-    clear_screen(gpu_api, term_api, width, height)
+    local ok, err = clear_screen(gpu_api, width, height, origin_x, origin_y)
+    if not ok then
+      return nil, err or "gpu fill failed"
+    end
   end
 
   for y = 1, height do
     if M._frame_cache.lines[y] ~= full_lines[y] then
-      write_line(term_api, gpu_api, y, full_lines[y])
+      local ok, err = write_line(gpu_api, origin_x, origin_y + y - 1, full_lines[y])
+      if not ok then
+        return nil, err or "gpu set failed"
+      end
       M._frame_cache.lines[y] = full_lines[y]
     end
   end
+
+  return true
 end
 
 return M

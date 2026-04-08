@@ -49,17 +49,27 @@ local function safe_require(name)
   return nil
 end
 
+local function fresh_require(name)
+  if package and package.loaded then
+    package.loaded[name] = nil
+  end
+  return require(name)
+end
+
 local SCRIPT_DIR = split_path(script_source_path())
 ensure_package_path(SCRIPT_DIR)
 
-local component = rawget(_G, "component") or safe_require("component")
+local component = safe_require("component")
 local event = safe_require("event")
 local term = safe_require("term")
+local tty = safe_require("tty")
 local unicode = safe_require("unicode")
+local keyboard = safe_require("keyboard")
 
-local route_book_store = require("lib.route_book_store")
-local augment_registry = require("lib.augment_registry")
-local term_ui = require("lib.term_ui")
+local route_book_store = fresh_require("lib.route_book_store")
+local augment_registry = fresh_require("lib.augment_registry")
+local oc_proxy = fresh_require("lib.oc_proxy")
+local term_ui = fresh_require("lib.term_ui")
 
 local dispatcher_chunk = assert(loadfile(join_paths(SCRIPT_DIR, "station_dispatch.lua")))
 local station_dispatch = dispatcher_chunk("__module__")
@@ -72,7 +82,24 @@ local KEY = {
   enter = 28,
   tab = 15,
   esc = 1,
+  left = 203,
+  right = 205,
+  home = 199,
+  ["end"] = 207,
+  delete = 211,
+  c = 46,
+  v = 47,
 }
+
+local function clamp(n, low, high)
+  if n < low then
+    return low
+  end
+  if n > high then
+    return high
+  end
+  return n
+end
 
 local function sorted_keys(source)
   local keys = {}
@@ -116,6 +143,7 @@ local function new_state()
     },
     message = load_error and ("load fallback: " .. tostring(load_error)) or "Ready",
     modal = nil,
+    editor_clipboard = "",
   }
 end
 
@@ -209,14 +237,17 @@ local function parse_waypoints(raw)
   return waypoints
 end
 
-local function clamp(n, low, high)
-  if n < low then
-    return low
+local function is_valid_target(target)
+  if type(term_ui.is_valid_target) == "function" then
+    return term_ui.is_valid_target(target)
   end
-  if n > high then
-    return high
-  end
-  return n
+  return type(target) == "table"
+    and type(target.x) == "number"
+    and type(target.y) == "number"
+    and type(target.width) == "number"
+    and type(target.height) == "number"
+    and target.width > 0
+    and target.height > 0
 end
 
 local function add_targets(targets, incoming, extra)
@@ -226,34 +257,74 @@ local function add_targets(targets, incoming, extra)
         target[key] = value
       end
     end
-    if term_ui.is_valid_target(target) then
+    if is_valid_target(target) then
       targets[#targets + 1] = target
     end
   end
+end
+
+local function rect(x, y, width, height, title)
+  return {
+    x = x,
+    y = y,
+    width = width,
+    height = height,
+    title = title,
+  }
 end
 
 local function layout_for(width, height)
   local tier
   if width < 54 or height < 18 then
     tier = "minimum"
-  elseif width < 80 or height < 24 then
+  elseif width < 100 or height < 30 then
     tier = "compact"
   else
     tier = "comfort"
   end
 
-  local bottom_rows = tier == "compact" and 5 or 3
-  local content_top = 4
-  local content_height = math.max(height - content_top - bottom_rows, 1)
-  return {
+  local layout = {
     tier = tier,
-    tabs = tier == "comfort" and TABS_COMFORT or TABS_COMPACT,
     width = width,
     height = height,
-    content_top = content_top,
-    content_height = content_height,
-    buttons_top = height - bottom_rows + 1,
+    tabs = tier == "comfort" and TABS_COMFORT or TABS_COMPACT,
+    status_y = height - 1,
+    button_rows = tier == "compact" and 2 or 1,
+    button_y = tier == "compact" and (height - 4) or (height - 2),
   }
+
+  if tier == "minimum" then
+    return layout
+  end
+
+  local content_top = 4
+  local content_bottom = layout.button_y - 2
+  local content_height = math.max(content_bottom - content_top + 1, 3)
+  layout.content_top = content_top
+  layout.content_height = content_height
+
+  if tier == "comfort" then
+    layout.left = rect(3, content_top, 36, content_height)
+    layout.right = rect(41, content_top, math.max(width - 43, 10), content_height)
+    layout.schedule_list = rect(3, content_top, 24, content_height)
+    layout.schedule_entries = rect(29, content_top, 30, content_height)
+    layout.schedule_wait = rect(61, content_top, math.max(width - 63, 10), content_height)
+    layout.save = rect(3, content_top, math.max(width - 4, 10), content_height)
+  else
+    local inner_width = math.max(width - 4, 10)
+    local list_height = math.max(math.floor(content_height / 2), 4)
+    local detail_height = math.max(content_height - list_height - 1, 4)
+    layout.primary_list = rect(3, content_top, inner_width, list_height)
+    layout.primary_detail = rect(3, content_top + list_height + 1, inner_width, detail_height)
+
+    local third = math.max(math.floor(content_height / 3), 3)
+    layout.schedule_list = rect(3, content_top, inner_width, third)
+    layout.schedule_entries = rect(3, content_top + third + 1, inner_width, third)
+    layout.schedule_wait = rect(3, content_top + third * 2 + 2, inner_width, math.max(content_height - third * 2 - 2, 3))
+    layout.save = rect(3, content_top, inner_width, content_height)
+  end
+
+  return layout
 end
 
 local function make_action_buttons(layout)
@@ -267,11 +338,11 @@ local function make_action_buttons(layout)
   local buttons = {}
   if layout.tier == "compact" then
     local positions = {
-      {3, layout.buttons_top},
-      {16, layout.buttons_top},
-      {29, layout.buttons_top},
-      {3, layout.buttons_top + 2},
-      {18, layout.buttons_top + 2},
+      {3, layout.button_y},
+      {16, layout.button_y},
+      {29, layout.button_y},
+      {3, layout.button_y + 1},
+      {18, layout.button_y + 1},
     }
     for index, spec in ipairs(specs) do
       buttons[#buttons + 1] = term_ui.button(spec[1], spec[2], positions[index][1], positions[index][2], math.max(#spec[2] + 4, 10))
@@ -280,7 +351,7 @@ local function make_action_buttons(layout)
     local x = 3
     for _, spec in ipairs(specs) do
       local width = math.max(#spec[2] + 4, 10)
-      buttons[#buttons + 1] = term_ui.button(spec[1], spec[2], x, layout.height - 2, width)
+      buttons[#buttons + 1] = term_ui.button(spec[1], spec[2], x, layout.button_y, width)
       x = x + width + 2
     end
   end
@@ -295,12 +366,36 @@ local function render_text(buffer, x, y, text, width)
   }
 end
 
+local function normalize_clipboard_text(text)
+  text = tostring(text or ""):gsub("\r\n", "\n"):gsub("\r", "\n"):gsub("\n", " ")
+  return text
+end
+
+local function modal_field_visible_value(field, available)
+  local prefix = tostring(field.label or "") .. ": "
+  local raw_value = tostring(field.value or "")
+  local cursor = clamp(field.cursor or (#raw_value + 1), 1, #raw_value + 1)
+  local viewport = math.max(available - #prefix - 2, 1)
+  local scroll_x = clamp(field.scroll_x or 0, 0, math.max(#raw_value - viewport, 0))
+  if cursor - 1 < scroll_x then
+    scroll_x = cursor - 1
+  elseif cursor - 1 > scroll_x + viewport then
+    scroll_x = cursor - 1 - viewport
+  end
+  field.scroll_x = math.max(scroll_x, 0)
+
+  local display = raw_value:sub(field.scroll_x + 1, field.scroll_x + viewport)
+  local cursor_index = clamp(cursor - field.scroll_x, 1, viewport + 1)
+  display = display:sub(1, cursor_index - 1) .. "|" .. display:sub(cursor_index)
+  return prefix .. display
+end
+
 local function render_modal(buffer, targets, layout, modal)
   if not modal then
     return
   end
 
-  local width = math.max(math.min(layout.width - 6, 52), 24)
+  local width = math.max(math.min(layout.width - 6, 56), 26)
   local height = math.max(#modal.fields + 7, 10)
   local x = math.max(math.floor((layout.width - width) / 2) + 1, 2)
   local y = math.max(math.floor((layout.height - height) / 2) + 1, 2)
@@ -309,7 +404,7 @@ local function render_modal(buffer, targets, layout, modal)
   for index, field in ipairs(modal.fields) do
     local row_y = y + 1 + index
     local prefix = index == modal.active_index and ">" or " "
-    render_text(buffer, x + 2, row_y, ("%s %s: %s"):format(prefix, field.label, field.value or ""), width - 4)
+    render_text(buffer, x + 2, row_y, prefix .. modal_field_visible_value(field, width - 4), width - 4)
     local target = {
       id = "modal:field:" .. index,
       x = x + 1,
@@ -318,7 +413,7 @@ local function render_modal(buffer, targets, layout, modal)
       height = 1,
       modal_field_index = index,
     }
-    if term_ui.is_valid_target(target) then
+    if is_valid_target(target) then
       targets[#targets + 1] = target
     end
   end
@@ -331,10 +426,13 @@ end
 local function open_modal(state, spec)
   local fields = {}
   for _, field in ipairs(spec.fields or {}) do
+    local value = tostring(field.value or "")
     fields[#fields + 1] = {
       key = field.key,
       label = field.label,
-      value = tostring(field.value or ""),
+      value = value,
+      cursor = #value + 1,
+      scroll_x = 0,
     }
   end
   state.modal = {
@@ -363,15 +461,6 @@ local function submit_modal(state)
   local ok, message = state.modal.on_submit(state, values)
   close_modal(state, message or (ok and "Saved" or "Canceled"))
   return ok ~= false
-end
-
-local function modal_field_value(modal, key)
-  for _, field in ipairs(modal.fields) do
-    if field.key == key then
-      return field.value
-    end
-  end
-  return nil
 end
 
 local function move_detector(state, step)
@@ -687,6 +776,15 @@ local function render_minimum_screen(buffer, layout)
   render_text(buffer, 3, 8, ("Current: %dx%d"):format(layout.width, layout.height), math.max(layout.width - 4, 1))
 end
 
+local function render_primary_split(buffer, targets, list_rect, detail_rect, title, items, selected_index, area, detail_lines)
+  term_ui.render_box(buffer, term_ui.box(list_rect.x, list_rect.y, list_rect.width, list_rect.height, title))
+  add_targets(targets, term_ui.render_list(buffer, list_rect.x + 2, list_rect.y + 2, list_rect.width - 4, items, selected_index, math.max(list_rect.height - 4, 1)), {area = area})
+  term_ui.render_box(buffer, term_ui.box(detail_rect.x, detail_rect.y, detail_rect.width, detail_rect.height, title .. " Details"))
+  for index, line in ipairs(detail_lines or {}) do
+    render_text(buffer, detail_rect.x + 2, detail_rect.y + 1 + index, line, detail_rect.width - 4)
+  end
+end
+
 local function build_screen(state, width, height)
   width = math.max(width or 100, 1)
   height = math.max(height or 32, 1)
@@ -709,101 +807,99 @@ local function build_screen(state, width, height)
   term_ui.render_box(buffer, term_ui.box(1, 1, width, height, "IR Schedule Editor"))
   add_targets(targets, term_ui.render_tabs(buffer, layout.tabs, state.active_tab, 3, 2))
 
-  local left_width = layout.tier == "comfort" and 36 or (width - 4)
-  local right_x = layout.tier == "comfort" and 41 or 3
-  local right_width = layout.tier == "comfort" and math.max(width - 43, 1) or math.max(width - 4, 1)
-  local list_rows = layout.tier == "comfort" and math.max(layout.content_height - 2, 1) or math.max(math.floor((layout.content_height - 4) / 2), 1)
-  local detail_top = layout.tier == "comfort" and layout.content_top or (layout.content_top + list_rows + 2)
-  local detail_height = layout.tier == "comfort" and layout.content_height or math.max(height - detail_top - 5, 1)
-
   if state.active_tab == 1 then
     local items = detector_items(state.book)
-    local _, selected_index = selected_from(items, state.selections.detectors)
-    term_ui.render_box(buffer, term_ui.box(3, layout.content_top, left_width, layout.content_height, "Known Detectors"))
-    add_targets(targets, term_ui.render_list(buffer, 5, layout.content_top + 2, left_width - 4, items, selected_index, list_rows), {area = "detectors"})
+    local selected, selected_index = selected_from(items, state.selections.detectors)
+    local detail_lines = {}
+    if selected then
+      local detector = state.book.AUGMENTS.DETECTORS[selected.id]
+      detail_lines = {
+        "ID: " .. selected.id,
+        "Label: " .. tostring(detector.label or selected.id),
+        "Address: " .. tostring(detector.address or ""),
+      }
+    end
     if layout.tier == "comfort" then
-      term_ui.render_box(buffer, term_ui.box(right_x, layout.content_top, right_width, layout.content_height, "Detector Details"))
-      local selected = select(1, selected_from(items, selected_index))
-      if selected then
-        local detector = state.book.AUGMENTS.DETECTORS[selected.id]
-        render_text(buffer, right_x + 2, layout.content_top + 2, "ID: " .. selected.id, right_width - 4)
-        render_text(buffer, right_x + 2, layout.content_top + 3, "Label: " .. tostring(detector.label or selected.id), right_width - 4)
-        render_text(buffer, right_x + 2, layout.content_top + 4, "Address: " .. tostring(detector.address or ""), right_width - 4)
-      end
+      render_primary_split(buffer, targets, layout.left, layout.right, "Known Detectors", items, selected_index, "detectors", detail_lines)
+    else
+      render_primary_split(buffer, targets, layout.primary_list, layout.primary_detail, "Detectors", items, selected_index, "detectors", detail_lines)
     end
   elseif state.active_tab == 2 then
     local items = station_items(state.book)
     local selected, selected_index = selected_from(items, state.selections.stations)
-    term_ui.render_box(buffer, term_ui.box(3, layout.content_top, left_width, layout.content_height, "Stations"))
-    add_targets(targets, term_ui.render_list(buffer, 5, layout.content_top + 2, left_width - 4, items, selected_index, list_rows), {area = "stations"})
-    term_ui.render_box(buffer, term_ui.box(right_x, detail_top, right_width, detail_height, "Station Details"))
+    local detail_lines = {}
     if selected then
       local station = state.book.STATIONS[selected.id]
-      render_text(buffer, right_x + 2, detail_top + 2, ("ID: %s"):format(selected.id), right_width - 4)
-      render_text(buffer, right_x + 2, detail_top + 3, ("Name: %s"):format(station.display_name or selected.id), right_width - 4)
-      render_text(buffer, right_x + 2, detail_top + 4, ("Pos: %s, %s, %s"):format(station.x, station.y, station.z), right_width - 4)
-      render_text(buffer, right_x + 2, detail_top + 6, "Detectors", right_width - 4)
-      for index, detector_id in ipairs(station.detector_ids or {}) do
-        render_text(buffer, right_x + 4, detail_top + 6 + index, ((index == 1) and "> " or "  ") .. detector_id, right_width - 6)
+      detail_lines = {
+        ("ID: %s"):format(selected.id),
+        ("Name: %s"):format(station.display_name or selected.id),
+        ("Pos: %s, %s, %s"):format(station.x, station.y, station.z),
+        "Detectors:",
+      }
+      for _, detector_id in ipairs(station.detector_ids or {}) do
+        detail_lines[#detail_lines + 1] = "  " .. detector_id
       end
+    end
+    if layout.tier == "comfort" then
+      render_primary_split(buffer, targets, layout.left, layout.right, "Stations", items, selected_index, "stations", detail_lines)
+    else
+      render_primary_split(buffer, targets, layout.primary_list, layout.primary_detail, "Stations", items, selected_index, "stations", detail_lines)
     end
   elseif state.active_tab == 3 then
     local items = route_items(state.book)
     local selected, selected_index = selected_from(items, state.selections.routes)
-    term_ui.render_box(buffer, term_ui.box(3, layout.content_top, left_width, layout.content_height, "Routes"))
-    add_targets(targets, term_ui.render_list(buffer, 5, layout.content_top + 2, left_width - 4, items, selected_index, list_rows), {area = "routes"})
-    term_ui.render_box(buffer, term_ui.box(right_x, detail_top, right_width, detail_height, "Route Details"))
+    local detail_lines = {}
     if selected then
       local route = state.book.ROUTES[selected.id]
-      render_text(buffer, right_x + 2, detail_top + 2, ("Route: %s"):format(selected.id), right_width - 4)
-      render_text(buffer, right_x + 2, detail_top + 3, ("Profile: %s"):format(route.profile or "conservative"), right_width - 4)
+      detail_lines = {
+        ("Route: %s"):format(selected.id),
+        ("Profile: %s"):format(route.profile or "conservative"),
+      }
       for index, waypoint in ipairs(route.waypoints or {}) do
         local waypoint_text = type(waypoint) == "string" and waypoint or ("%s,%s,%s"):format(waypoint.x, waypoint.y, waypoint.z)
-        render_text(buffer, right_x + 2, detail_top + 4 + index, ("[%d] %s"):format(index, waypoint_text), right_width - 4)
+        detail_lines[#detail_lines + 1] = ("[%d] %s"):format(index, waypoint_text)
       end
+    end
+    if layout.tier == "comfort" then
+      render_primary_split(buffer, targets, layout.left, layout.right, "Routes", items, selected_index, "routes", detail_lines)
+    else
+      render_primary_split(buffer, targets, layout.primary_list, layout.primary_detail, "Routes", items, selected_index, "routes", detail_lines)
     end
   elseif state.active_tab == 4 then
     local items = schedule_items(state.book)
     local selected, selected_index = selected_from(items, state.selections.schedules)
-    local center_x = layout.tier == "comfort" and 29 or 3
-    local center_width = layout.tier == "comfort" and 30 or math.max(width - 4, 1)
-    local right_column_x = layout.tier == "comfort" and 61 or 3
-    local right_column_width = layout.tier == "comfort" and math.max(width - 63, 1) or math.max(width - 4, 1)
-    local second_panel_top = layout.tier == "comfort" and layout.content_top or (layout.content_top + math.max(math.floor(layout.content_height / 3), 3))
-    local third_panel_top = layout.tier == "comfort" and layout.content_top or (second_panel_top + math.max(math.floor(layout.content_height / 3), 3))
-
-    term_ui.render_box(buffer, term_ui.box(3, layout.content_top, 24, layout.content_height, "Schedules"))
-    add_targets(targets, term_ui.render_list(buffer, 5, layout.content_top + 2, 20, items, selected_index, list_rows), {area = "schedules"})
-    term_ui.render_box(buffer, term_ui.box(center_x, second_panel_top, center_width, layout.tier == "comfort" and layout.content_height or math.max(math.floor(layout.content_height / 3), 3), "Entries"))
-    term_ui.render_box(buffer, term_ui.box(right_column_x, third_panel_top, right_column_width, layout.tier == "comfort" and layout.content_height or math.max(height - third_panel_top - 5, 3), "Wait Conditions"))
+    term_ui.render_box(buffer, term_ui.box(layout.schedule_list.x, layout.schedule_list.y, layout.schedule_list.width, layout.schedule_list.height, "Schedules"))
+    add_targets(targets, term_ui.render_list(buffer, layout.schedule_list.x + 2, layout.schedule_list.y + 2, layout.schedule_list.width - 4, items, selected_index, math.max(layout.schedule_list.height - 4, 1)), {area = "schedules"})
+    term_ui.render_box(buffer, term_ui.box(layout.schedule_entries.x, layout.schedule_entries.y, layout.schedule_entries.width, layout.schedule_entries.height, "Entries"))
+    term_ui.render_box(buffer, term_ui.box(layout.schedule_wait.x, layout.schedule_wait.y, layout.schedule_wait.width, layout.schedule_wait.height, "Wait Conditions"))
     if selected then
       local schedule = state.book.SCHEDULES[selected.id]
       for index, entry in ipairs(schedule.entries or {}) do
-        render_text(buffer, center_x + 2, second_panel_top + 2 + index, ("[%d] %s"):format(index, entry.route), center_width - 4)
+        render_text(buffer, layout.schedule_entries.x + 2, layout.schedule_entries.y + 1 + index, ("[%d] %s"):format(index, entry.route), layout.schedule_entries.width - 4)
       end
       local first_entry = schedule.entries and schedule.entries[1]
       if first_entry and first_entry.wait then
         for group_index, group in ipairs(first_entry.wait.groups or {}) do
           local first_condition = group[1]
-          render_text(buffer, right_column_x + 2, third_panel_top + 1 + group_index * 2, ("Group %s"):format(string.char(64 + group_index)), right_column_width - 4)
+          render_text(buffer, layout.schedule_wait.x + 2, layout.schedule_wait.y + group_index * 2, ("Group %s"):format(string.char(64 + group_index)), layout.schedule_wait.width - 4)
           if first_condition then
-            render_text(buffer, right_column_x + 2, third_panel_top + 2 + group_index * 2, ("%s %s %s"):format(first_condition.type, tostring(first_condition.comparator or ">="), tostring(first_condition.value or first_condition.seconds)), right_column_width - 4)
+            render_text(buffer, layout.schedule_wait.x + 2, layout.schedule_wait.y + group_index * 2 + 1, ("%s %s %s"):format(first_condition.type, tostring(first_condition.comparator or ">="), tostring(first_condition.value or first_condition.seconds)), layout.schedule_wait.width - 4)
           end
         end
       end
     end
   else
-    term_ui.render_box(buffer, term_ui.box(3, layout.content_top, width - 4, layout.content_height, "Save / Validate"))
+    term_ui.render_box(buffer, term_ui.box(layout.save.x, layout.save.y, layout.save.width, layout.save.height, "Save / Validate"))
     local validation = station_dispatch.validate_route_book(state.book)
-    render_text(buffer, 5, layout.content_top + 2, ("Dirty: %s"):format(state.dirty and "[*]" or "[ ]"), width - 8)
-    render_text(buffer, 5, layout.content_top + 3, ("Validation: %s"):format(validation.ok and "OK" or "Errors"), width - 8)
+    render_text(buffer, layout.save.x + 2, layout.save.y + 2, ("Dirty: %s"):format(state.dirty and "[*]" or "[ ]"), layout.save.width - 4)
+    render_text(buffer, layout.save.x + 2, layout.save.y + 3, ("Validation: %s"):format(validation.ok and "OK" or "Errors"), layout.save.width - 4)
     for index, message in ipairs(validation.errors or {}) do
-      render_text(buffer, 5, layout.content_top + 4 + index, "ERROR: " .. message, width - 8)
+      render_text(buffer, layout.save.x + 2, layout.save.y + 3 + index, "ERROR: " .. message, layout.save.width - 4)
     end
   end
 
   add_targets(targets, term_ui.render_buttons(buffer, make_action_buttons(layout)))
-  render_text(buffer, 3, height - 1, state.message or "", math.max(width - 4, 1))
+  render_text(buffer, 3, layout.status_y, state.message or "", math.max(width - 4, 1))
 
   if state.modal then
     render_modal(buffer, targets, layout, state.modal)
@@ -898,15 +994,69 @@ local function char_from_event(char_code)
   return nil
 end
 
+local function current_modal_field(state)
+  local modal = state.modal
+  if not modal then
+    return nil
+  end
+  return modal.fields[modal.active_index]
+end
+
+local function insert_into_field(field, text)
+  text = tostring(text or "")
+  local cursor = clamp(field.cursor or (#field.value + 1), 1, #field.value + 1)
+  field.value = field.value:sub(1, cursor - 1) .. text .. field.value:sub(cursor)
+  field.cursor = cursor + #text
+end
+
+local function delete_left(field)
+  local cursor = clamp(field.cursor or (#field.value + 1), 1, #field.value + 1)
+  if cursor <= 1 then
+    return
+  end
+  field.value = field.value:sub(1, cursor - 2) .. field.value:sub(cursor)
+  field.cursor = cursor - 1
+end
+
+local function delete_right(field)
+  local cursor = clamp(field.cursor or (#field.value + 1), 1, #field.value + 1)
+  if cursor > #field.value then
+    return
+  end
+  field.value = field.value:sub(1, cursor - 1) .. field.value:sub(cursor + 1)
+end
+
+local function control_down()
+  if keyboard and type(keyboard.isControlDown) == "function" then
+    local ok, value = pcall(keyboard.isControlDown)
+    return ok and value == true
+  end
+  return false
+end
+
+local function handle_clipboard(state, text)
+  local field = current_modal_field(state)
+  if not field then
+    return false
+  end
+  insert_into_field(field, normalize_clipboard_text(text))
+  return true
+end
+
 local function handle_key_down(state, char_code, key_code)
-  if not state.modal then
+  local field = current_modal_field(state)
+  if not field then
     return false
   end
 
-  local modal = state.modal
-  local field = modal.fields[modal.active_index]
-  if not field then
-    return false
+  if control_down() and key_code == KEY.c then
+    state.editor_clipboard = field.value
+    state.message = "Field copied"
+    return true
+  end
+  if control_down() and key_code == KEY.v then
+    insert_into_field(field, normalize_clipboard_text(state.editor_clipboard))
+    return true
   end
 
   if key_code == KEY.esc then
@@ -914,57 +1064,559 @@ local function handle_key_down(state, char_code, key_code)
     return true
   end
   if key_code == KEY.tab then
-    modal.active_index = modal.active_index % #modal.fields + 1
+    state.modal.active_index = state.modal.active_index % #state.modal.fields + 1
     return true
   end
   if key_code == KEY.enter then
-    if modal.active_index < #modal.fields then
-      modal.active_index = modal.active_index + 1
+    if state.modal.active_index < #state.modal.fields then
+      state.modal.active_index = state.modal.active_index + 1
       return true
     end
     submit_modal(state)
     return true
   end
+  if key_code == KEY.left then
+    field.cursor = clamp((field.cursor or 1) - 1, 1, #field.value + 1)
+    return true
+  end
+  if key_code == KEY.right then
+    field.cursor = clamp((field.cursor or 1) + 1, 1, #field.value + 1)
+    return true
+  end
+  if key_code == KEY.home then
+    field.cursor = 1
+    return true
+  end
+  if key_code == KEY["end"] then
+    field.cursor = #field.value + 1
+    return true
+  end
   if key_code == KEY.backspace then
-    field.value = field.value:sub(1, math.max(#field.value - 1, 0))
+    delete_left(field)
+    return true
+  end
+  if key_code == KEY.delete then
+    delete_right(field)
     return true
   end
 
   local char = char_from_event(char_code)
   if char and char >= " " then
-    field.value = field.value .. char
+    insert_into_field(field, char)
     return true
   end
 
   return false
 end
 
-local function resolution(gpu)
-  local width, height = 100, 32
-  if gpu and type(gpu.getResolution) == "function" then
-    width, height = gpu.getResolution()
+local function call_api(target, method, ...)
+  local ok, first, second, third, fourth, fifth, sixth = oc_proxy.invoke(component, target, method, ...)
+  if ok then
+    return first, second, third, fourth, fifth, sixth
   end
-  return width, height
+  return nil
 end
 
-local function run()
-  local state = new_state()
-  local gpu = component and component.gpu or nil
-  local width, height = resolution(gpu)
+local function parse_wh(a, b)
+  if type(a) == "number" and type(b) == "number" then
+    return math.floor(a), math.floor(b)
+  end
+  return nil, nil
+end
+
+local function parse_global_area(x, y, width, height)
+  local origin_x, origin_y = parse_wh(x, y)
+  local viewport_width, viewport_height = parse_wh(width, height)
+  if origin_x and origin_y and viewport_width and viewport_height then
+    return origin_x, origin_y, viewport_width, viewport_height
+  end
+  return nil, nil
+end
+
+local function read_member(target, key)
+  return oc_proxy.read(target, key)
+end
+
+local function proxy_from_component(component_api, kind)
+  if not component_api then
+    return nil
+  end
+
+  if type(component_api.getPrimary) == "function" then
+    local ok, primary = pcall(component_api.getPrimary, kind)
+    if ok and primary ~= nil then
+      return primary
+    end
+  end
+
+  local value = read_member(component_api, kind)
+  if value ~= nil and type(value) ~= "string" then
+    return value
+  end
+
+  if type(component_api.proxy) == "function" and type(value) == "string" then
+    local ok, proxy = pcall(component_api.proxy, value)
+    if ok and proxy ~= nil then
+      return proxy
+    end
+  end
+  return nil
+end
+
+local function attempt_terminal_rebind(component_api, tty_api, diagnostics)
+  diagnostics.rebind_attempted = "yes"
+  diagnostics.rebind_ok = "no"
+  diagnostics.tty_bind_before_gpu_bind = "no"
+  diagnostics.tty_bind_after_gpu_bind = "no"
+  diagnostics.gpu_bind_attempted = "no"
+  diagnostics.gpu_bind_ok = "no"
+  diagnostics.component_gpu = "no"
+  diagnostics.component_screen = "no"
+  diagnostics.gpu_bound_screen = diagnostics.gpu_bound_screen or "nil"
+
+  if not component_api or type(component_api.isAvailable) ~= "function" then
+    return nil, "no gpu component"
+  end
+
+  local has_gpu = component_api.isAvailable("gpu") == true
+  diagnostics.component_gpu = has_gpu and "yes" or "no"
+  if not has_gpu then
+    return nil, "no gpu component"
+  end
+
+  local has_screen = component_api.isAvailable("screen") == true
+  diagnostics.component_screen = has_screen and "yes" or "no"
+  if not has_screen then
+    return nil, "no screen component"
+  end
+
+  local gpu = proxy_from_component(component_api, "gpu")
+  local screen = proxy_from_component(component_api, "screen")
+  diagnostics.gpu_proxy_type = type(gpu)
+  diagnostics.screen_proxy_type = type(screen)
+  diagnostics.gpu_address = tostring(oc_proxy.address_of(gpu) or "nil")
+  diagnostics.screen_address = tostring(oc_proxy.address_of(screen) or read_member(screen, "address") or "nil")
+  diagnostics.gpu_has_bind = oc_proxy.can_invoke(component_api, gpu, "bind") and "yes" or "no"
+  diagnostics.gpu_has_getScreen = oc_proxy.can_invoke(component_api, gpu, "getScreen") and "yes" or "no"
+  if not gpu or diagnostics.gpu_has_getScreen == "no" or diagnostics.gpu_has_bind == "no" then
+    return nil, "gpu invoke unavailable"
+  end
+  local screen_address = read_member(screen, "address")
+  if not screen or type(screen_address) ~= "string" then
+    if call_api(gpu, "getScreen") then
+      screen = nil
+    else
+      return nil, "screen proxy unavailable"
+    end
+  end
+
+  local current_screen = call_api(gpu, "getScreen")
+  diagnostics.gpu_current_screen = tostring(current_screen or "nil")
+  diagnostics.gpu_bound_screen = diagnostics.gpu_current_screen
+
+  diagnostics.tty_bind_before_gpu_bind = "yes"
+  local ok, bind_result = pcall(tty_api.bind, gpu)
+  local rebound = call_api(tty_api, "gpu")
+  diagnostics.invoke_getScreen_ok = diagnostics.gpu_has_getScreen
+  diagnostics.tty_gpu_after = rebound and "yes" or "no"
+  if ok and bind_result ~= false and rebound and oc_proxy.can_invoke(component_api, rebound, "set") then
+    diagnostics.invoke_set_ok = "yes"
+    diagnostics.rebind_ok = "yes"
+    return rebound
+  end
+
+  if not current_screen then
+    if not screen or type(screen_address) ~= "string" then
+      return nil, "screen proxy unavailable"
+    end
+    diagnostics.gpu_bind_attempted = "yes"
+    local bind_ok, gpu_bind_result = pcall(gpu.bind, screen_address)
+    if not bind_ok or gpu_bind_result == false then
+      return nil, "gpu has no screen and gpu bind failed"
+    end
+    diagnostics.gpu_bind_ok = "yes"
+    diagnostics.invoke_bind_ok = "yes"
+    diagnostics.gpu_bound_screen = tostring(call_api(gpu, "getScreen") or "nil")
+  end
+
+  diagnostics.tty_bind_after_gpu_bind = "yes"
+  ok, bind_result = pcall(tty_api.bind, gpu)
+  if not ok or bind_result == false then
+    return nil, "tty bind failed"
+  end
+
+  rebound = call_api(tty_api, "gpu")
+  diagnostics.tty_gpu_after = rebound and "yes" or "no"
+  diagnostics.rebind_ok = rebound and "yes" or "no"
+  diagnostics.invoke_set_ok = oc_proxy.can_invoke(component_api, rebound, "set") and "yes" or "no"
+  if not rebound or diagnostics.invoke_set_ok ~= "yes" then
+    return nil, "tty bind failed"
+  end
+  return rebound
+end
+
+local function resolve_terminal_context(term_api, tty_api, component_api)
+  local diagnostics = {
+    term_module = term_api ~= nil,
+    tty_module = tty_api ~= nil,
+    tty_available = "unknown",
+    term_gpu = "no",
+    tty_gpu = "no",
+    tty_gpu_before = "no",
+    tty_gpu_after = "no",
+    rebind_attempted = "no",
+    rebind_ok = "no",
+    component_gpu = "unknown",
+    component_screen = "unknown",
+    gpu_bound_screen = "nil",
+    gpu_current_screen = "nil",
+    viewport = "unknown",
+    origin = "unknown",
+    raw_viewport = "unknown",
+    tty_bind_before_gpu_bind = "no",
+    tty_bind_after_gpu_bind = "no",
+    gpu_bind_attempted = "no",
+    gpu_bind_ok = "no",
+    gpu_proxy_type = "nil",
+    screen_proxy_type = "nil",
+    gpu_has_bind = "no",
+    gpu_has_getScreen = "no",
+    gpu_address = "nil",
+    screen_address = "nil",
+    invoke_getScreen_ok = "no",
+    invoke_bind_ok = "no",
+    invoke_set_ok = "no",
+  }
+
+  if not tty_api then
+    return nil, "tty unavailable", diagnostics
+  end
+
+  local tty_available = call_api(tty_api, "isAvailable")
+  if tty_available ~= nil then
+    diagnostics.tty_available = tty_available and "yes" or "no"
+  end
+
+  local term_gpu = call_api(term_api, "gpu")
+  diagnostics.term_gpu = term_gpu and "yes" or "no"
+
+  local gpu = call_api(tty_api, "gpu")
+  diagnostics.tty_gpu_before = gpu and "yes" or "no"
+  diagnostics.tty_gpu = diagnostics.tty_gpu_before
+  diagnostics.invoke_set_ok = oc_proxy.can_invoke(component_api, gpu, "set") and "yes" or "no"
+  diagnostics.invoke_getScreen_ok = oc_proxy.can_invoke(component_api, gpu, "getScreen") and "yes" or "no"
+  diagnostics.gpu_address = tostring(oc_proxy.address_of(gpu) or "nil")
+  if not gpu or diagnostics.invoke_set_ok ~= "yes" then
+    local rebound, rebind_error = attempt_terminal_rebind(component_api, tty_api, diagnostics)
+    if not rebound then
+      diagnostics.tty_gpu_after = "no"
+      return nil, rebind_error or "no bound terminal gpu", diagnostics
+    end
+    gpu = rebound
+    diagnostics.tty_gpu = "yes"
+  else
+    diagnostics.tty_gpu_after = "yes"
+  end
+
+  local screen_address = call_api(gpu, "getScreen")
+  if screen_address then
+    diagnostics.gpu_bound_screen = tostring(screen_address)
+  end
+
+  local viewport_1, viewport_2, viewport_3, viewport_4, viewport_5, viewport_6 = call_api(tty_api, "getViewport")
+  local viewport_width, viewport_height = parse_wh(viewport_1, viewport_2)
+  local origin_x, origin_y = 1, 1
+  local area_x, area_y, area_width, area_height = parse_global_area(call_api(term_api, "getGlobalArea"))
+  if area_x and area_y then
+    origin_x, origin_y = area_x, area_y
+    if not viewport_width or not viewport_height then
+      viewport_width, viewport_height = area_width, area_height
+    end
+  end
+  if not viewport_width or viewport_width <= 0 or not viewport_height or viewport_height <= 0 then
+    return nil, "viewport unavailable", diagnostics
+  end
+
+  diagnostics.origin = ("%d,%d"):format(origin_x, origin_y)
+  diagnostics.viewport = ("%dx%d"):format(viewport_width, viewport_height)
+  diagnostics.raw_viewport = table.concat({
+    tostring(viewport_1 or "nil"),
+    tostring(viewport_2 or "nil"),
+    tostring(viewport_3 or "nil"),
+    tostring(viewport_4 or "nil"),
+    tostring(viewport_5 or "nil"),
+    tostring(viewport_6 or "nil"),
+  }, ",")
+  local physical_width, physical_height = parse_wh(call_api(gpu, "getResolution"))
+  return {
+    renderer = "term-gpu",
+    gpu = gpu,
+    screen_address = screen_address,
+    keyboard_address = call_api(term_api, "keyboard"),
+    viewport_width = viewport_width,
+    viewport_height = viewport_height,
+    origin_x = origin_x,
+    origin_y = origin_y,
+    physical_width = physical_width,
+    physical_height = physical_height,
+    diagnostics = diagnostics,
+  }, nil, diagnostics
+end
+
+local function diagnostic_summary(context, problem, diagnostics)
+  local api = tostring(term_ui.API_VERSION or "?")
+  if not context then
+    diagnostics = diagnostics or {}
+    return table.concat({
+      "renderer=unavailable",
+      ("error=%s"):format(problem or "unsupported renderer"),
+      ("term_module=%s"):format(diagnostics.term_module and "yes" or "no"),
+      ("tty_module=%s"):format(diagnostics.tty_module and "yes" or "no"),
+      ("tty_available=%s"):format(diagnostics.tty_available or "unknown"),
+      ("component_gpu=%s"):format(diagnostics.component_gpu or "unknown"),
+      ("component_screen=%s"):format(diagnostics.component_screen or "unknown"),
+      ("gpu_proxy_type=%s"):format(diagnostics.gpu_proxy_type or "nil"),
+      ("screen_proxy_type=%s"):format(diagnostics.screen_proxy_type or "nil"),
+      ("gpu_address=%s"):format(diagnostics.gpu_address or "nil"),
+      ("screen_address=%s"):format(diagnostics.screen_address or "nil"),
+      ("gpu_has_bind=%s"):format(diagnostics.gpu_has_bind or "no"),
+      ("gpu_has_getScreen=%s"):format(diagnostics.gpu_has_getScreen or "no"),
+      ("invoke_getScreen_ok=%s"):format(diagnostics.invoke_getScreen_ok or "no"),
+      ("invoke_bind_ok=%s"):format(diagnostics.invoke_bind_ok or "no"),
+      ("invoke_set_ok=%s"):format(diagnostics.invoke_set_ok or "no"),
+      ("gpu_current_screen=%s"):format(diagnostics.gpu_current_screen or "nil"),
+      ("gpu_bound_screen=%s"):format(diagnostics.gpu_bound_screen or "nil"),
+      ("term_gpu=%s"):format(diagnostics.term_gpu or "no"),
+      ("tty_gpu=%s"):format(diagnostics.tty_gpu or "no"),
+      ("tty_gpu_before=%s"):format(diagnostics.tty_gpu_before or "no"),
+      ("tty_gpu_after=%s"):format(diagnostics.tty_gpu_after or "no"),
+      ("tty_bind_before_gpu_bind=%s"):format(diagnostics.tty_bind_before_gpu_bind or "no"),
+      ("tty_bind_after_gpu_bind=%s"):format(diagnostics.tty_bind_after_gpu_bind or "no"),
+      ("gpu_bind_attempted=%s"):format(diagnostics.gpu_bind_attempted or "no"),
+      ("gpu_bind_ok=%s"):format(diagnostics.gpu_bind_ok or "no"),
+      ("rebind_attempted=%s"):format(diagnostics.rebind_attempted or "no"),
+      ("rebind_ok=%s"):format(diagnostics.rebind_ok or "no"),
+      ("origin=%s"):format(diagnostics.origin or "unknown"),
+      ("viewport=%s"):format(diagnostics.viewport or "unknown"),
+      ("raw_viewport=%s"):format(diagnostics.raw_viewport or "unknown"),
+      ("api=v%s"):format(api),
+    }, " ")
+  end
+
+  diagnostics = diagnostics or context.diagnostics or {}
+  local tier = layout_for(context.viewport_width, context.viewport_height).tier
+  local parts = {
+    ("renderer=%s"):format(context.renderer),
+    ("viewport=%dx%d"):format(context.viewport_width, context.viewport_height),
+    ("tier=%s"):format(tier),
+    ("term_module=%s"):format(diagnostics.term_module and "yes" or "no"),
+    ("tty_module=%s"):format(diagnostics.tty_module and "yes" or "no"),
+    ("tty_available=%s"):format(diagnostics.tty_available or "unknown"),
+    ("component_gpu=%s"):format(diagnostics.component_gpu or "unknown"),
+    ("component_screen=%s"):format(diagnostics.component_screen or "unknown"),
+    ("gpu_proxy_type=%s"):format(diagnostics.gpu_proxy_type or "nil"),
+    ("screen_proxy_type=%s"):format(diagnostics.screen_proxy_type or "nil"),
+    ("gpu_address=%s"):format(diagnostics.gpu_address or "nil"),
+    ("screen_address=%s"):format(diagnostics.screen_address or "nil"),
+    ("gpu_has_bind=%s"):format(diagnostics.gpu_has_bind or "no"),
+    ("gpu_has_getScreen=%s"):format(diagnostics.gpu_has_getScreen or "no"),
+    ("invoke_getScreen_ok=%s"):format(diagnostics.invoke_getScreen_ok or "no"),
+    ("invoke_bind_ok=%s"):format(diagnostics.invoke_bind_ok or "no"),
+    ("invoke_set_ok=%s"):format(diagnostics.invoke_set_ok or "no"),
+    ("gpu_current_screen=%s"):format(diagnostics.gpu_current_screen or "nil"),
+    ("gpu_bound_screen=%s"):format(diagnostics.gpu_bound_screen or "nil"),
+    ("term_gpu=%s"):format(diagnostics.term_gpu or "no"),
+    ("tty_gpu=%s"):format(diagnostics.tty_gpu or "no"),
+    ("tty_gpu_before=%s"):format(diagnostics.tty_gpu_before or "no"),
+    ("tty_gpu_after=%s"):format(diagnostics.tty_gpu_after or "no"),
+    ("tty_bind_before_gpu_bind=%s"):format(diagnostics.tty_bind_before_gpu_bind or "no"),
+    ("tty_bind_after_gpu_bind=%s"):format(diagnostics.tty_bind_after_gpu_bind or "no"),
+    ("gpu_bind_attempted=%s"):format(diagnostics.gpu_bind_attempted or "no"),
+    ("gpu_bind_ok=%s"):format(diagnostics.gpu_bind_ok or "no"),
+    ("rebind_attempted=%s"):format(diagnostics.rebind_attempted or "no"),
+    ("rebind_ok=%s"):format(diagnostics.rebind_ok or "no"),
+    ("origin=%d,%d"):format(context.origin_x or 1, context.origin_y or 1),
+    ("raw_viewport=%s"):format(diagnostics.raw_viewport or "unknown"),
+  }
+  if context.physical_width and context.physical_height then
+    parts[#parts + 1] = ("gpu=%dx%d"):format(context.physical_width, context.physical_height)
+  end
+  parts[#parts + 1] = ("api=v%s"):format(api)
+  return table.concat(parts, " ")
+end
+
+local function startup_summary(context, problem, diagnostics)
+  diagnostics = diagnostics or {}
+  local mode_name = diagnostics.mode_name or "run"
+  if mode_name == "diagnose-ui" then
+    return diagnostic_summary(context, problem, diagnostics)
+  end
+  if not context then
+    return ("UI error: %s"):format(problem or "unsupported renderer")
+  end
+  return nil
+end
+
+local function apply_startup_status(state, context, problem, diagnostics, mode_name)
+  diagnostics = diagnostics or {}
+  diagnostics.mode_name = mode_name or diagnostics.mode_name or "run"
+  local summary = startup_summary(context, problem, diagnostics)
+  if summary then
+    state.message = summary
+  end
+end
+
+local function context_error(problem)
+  return ("route_book_editor requires a bound OpenOS terminal with GPU (%s); use 'lua route_book_editor.lua diagnose-ui'"):format(problem or "unsupported renderer")
+end
+
+local function parse_cli_mode(argv)
+  local args = type(argv) == "table" and argv or {}
+  for index = 1, #args do
+    local value = tostring(args[index] or "")
+    if value == "diagnose-ui" or value == "--diagnose-ui" then
+      return "diagnose-ui"
+    end
+    if value == "--" then
+      local next_value = tostring(args[index + 1] or "")
+      if next_value == "--diagnose-ui" or next_value == "diagnose-ui" then
+        return "diagnose-ui"
+      end
+    end
+  end
+  return "run"
+end
+
+local function normalize_pointer_event(context, address, x, y)
+  if not context or type(x) ~= "number" or type(y) ~= "number" then
+    return nil, nil
+  end
+  if context.screen_address and type(address) == "string" and address ~= context.screen_address then
+    return nil, nil
+  end
+
+  local local_x = math.floor(x) - (context.origin_x or 1) + 1
+  local local_y = math.floor(y) - (context.origin_y or 1) + 1
+  if local_x < 1 or local_x > context.viewport_width or local_y < 1 or local_y > context.viewport_height then
+    return nil, nil
+  end
+  return local_x, local_y
+end
+
+local function stringify_error(err)
+  if err == nil then
+    return "unknown error"
+  end
+  if type(err) == "string" then
+    return err
+  end
+  if type(err) == "number" or type(err) == "boolean" then
+    return tostring(err)
+  end
+  if type(err) == "table" then
+    local parts = {}
+    if err.message ~= nil then
+      parts[#parts + 1] = tostring(err.message)
+    end
+    if err.reason ~= nil and err.reason ~= err.message then
+      parts[#parts + 1] = tostring(err.reason)
+    end
+    if err.code ~= nil then
+      parts[#parts + 1] = ("code=%s"):format(tostring(err.code))
+    end
+    if #parts > 0 then
+      return table.concat(parts, " ")
+    end
+  end
+  return tostring(err)
+end
+
+local function make_exit(kind, context, message, code)
+  return {
+    kind = kind,
+    context = context,
+    message = stringify_error(message),
+    code = code,
+  }
+end
+
+local function normalize_runtime_failure(err)
+  if type(err) == "table" then
+    if err.kind == "terminated" or err.reason == "terminated" then
+      return make_exit("terminated", err.context, err.message or err.reason or "terminated", err.code)
+    end
+    if err.kind == "error" then
+      return make_exit("error", err.context, err.message or err.reason or err)
+    end
+  end
+  return make_exit("error", nil, stringify_error(err))
+end
+
+local function finalize_exit(context, exit_result)
+  exit_result = type(exit_result) == "table" and exit_result or make_exit("ok", context)
+  context = exit_result.context or context
+
+  local cleanup_error
+  if context and context.gpu then
+    local ok, flush_error = term_ui.flush(term, context.gpu, context.viewport_width, context.viewport_height, {}, context.origin_x, context.origin_y)
+    if ok ~= true then
+      cleanup_error = stringify_error(flush_error)
+    end
+  end
+  if type(term_ui.reset_cache) == "function" then
+    term_ui.reset_cache()
+  end
+  if term and type(term.setCursor) == "function" then
+    pcall(term.setCursor, 1, 1)
+  end
+  if term and type(term.clear) == "function" then
+    pcall(term.clear)
+  end
+
+  if exit_result.kind == "error" then
+    if cleanup_error then
+      return nil, ("%s (cleanup: %s)"):format(stringify_error(exit_result.message), cleanup_error)
+    end
+    return nil, stringify_error(exit_result.message)
+  end
+  if cleanup_error then
+    return nil, cleanup_error
+  end
+  return true
+end
+
+local function run_loop(state, context, mode_name, on_context)
+  local current_context = context
+  local width = current_context and current_context.viewport_width or 100
+  local height = current_context and current_context.viewport_height or 32
   local screen
   local needs_render = true
 
   while true do
-    local new_width, new_height = resolution(gpu)
-    if new_width ~= width or new_height ~= height then
-      width, height = new_width, new_height
+    local new_context, new_problem, new_diagnostics = resolve_terminal_context(term, tty, component)
+    if not new_context then
+      return make_exit("error", current_context, context_error(new_problem))
+    end
+
+    if new_context.viewport_width ~= width
+      or new_context.viewport_height ~= height
+      or new_context.gpu ~= current_context.gpu then
+      current_context = new_context
+      width = current_context.viewport_width
+      height = current_context.viewport_height
       needs_render = true
-      state.message = ("Resized to %dx%d"):format(width, height)
+      if on_context then
+        on_context(current_context)
+      end
+      apply_startup_status(state, current_context, new_problem, new_diagnostics, mode_name)
     end
 
     if needs_render or not screen then
       screen = build_screen(state, width, height)
-      term_ui.flush(term, gpu, width, height, screen.buffer)
+      local ok, flush_error = term_ui.flush(term, current_context.gpu, width, height, screen.buffer, current_context.origin_x, current_context.origin_y)
+      if not ok then
+        return make_exit("error", current_context, flush_error)
+      end
       needs_render = false
     end
 
@@ -974,39 +1626,91 @@ local function run()
     if signal == nil then
       -- timeout poll
     elseif signal == "interrupted" then
-      return true
+      return make_exit("interrupted", current_context)
     elseif signal == "key_down" then
-      if not handle_key_down(state, pulled[3], pulled[4]) and pulled[4] == KEY.esc then
-        return true
+      if current_context.keyboard_address == nil or pulled[2] == current_context.keyboard_address then
+        if not handle_key_down(state, pulled[3], pulled[4]) and pulled[4] == KEY.esc then
+          return make_exit("ok", current_context)
+        end
+        needs_render = true
       end
-      needs_render = true
+    elseif signal == "clipboard" then
+      if (current_context.keyboard_address == nil or pulled[2] == current_context.keyboard_address)
+        and handle_clipboard(state, pulled[3]) then
+        needs_render = true
+      end
     elseif signal == "touch" then
-      if handle_click(state, pulled[3], pulled[4], screen) then
+      local local_x, local_y = normalize_pointer_event(current_context, pulled[2], pulled[3], pulled[4])
+      if local_x and handle_click(state, local_x, local_y, screen) then
         needs_render = true
       end
     elseif signal == "scroll" then
+      local local_x, local_y = normalize_pointer_event(current_context, pulled[2], pulled[3], pulled[4])
       local direction = (pulled[5] or 0) > 0 and -1 or 1
-      if handle_scroll(state, direction) then
+      if local_x and local_y and handle_scroll(state, direction) then
         needs_render = true
       end
     elseif signal == "drag" or signal == "drop" then
-      -- explicitly ignored in V1, but consumed so they do not destabilize the loop
+      -- consumed but intentionally ignored in V1
     end
   end
+end
+
+local function run(argv)
+  local state = new_state()
+  local context, problem, diagnostics = resolve_terminal_context(term, tty, component)
+  local latest_context = context
+  local mode_name = parse_cli_mode(argv)
+  local diagnose = mode_name == "diagnose-ui"
+
+  apply_startup_status(state, context, problem, diagnostics, mode_name)
+  if diagnose then
+    io.write(diagnostic_summary(context, problem, diagnostics) .. "\n")
+    return true
+  end
+  if not context then
+    return nil, context_error(problem)
+  end
+
+  local ok, exit_result = xpcall(function()
+    return run_loop(state, context, mode_name, function(updated_context)
+      latest_context = updated_context
+    end)
+  end, normalize_runtime_failure)
+  if ok ~= true then
+    exit_result = exit_result or make_exit("error", latest_context, "unknown error")
+  end
+
+  if type(exit_result) ~= "table" or not exit_result.kind then
+    exit_result = make_exit("ok", latest_context)
+  elseif not exit_result.context then
+    exit_result.context = latest_context
+  end
+  return finalize_exit(latest_context, exit_result)
 end
 
 local exports = {
   new_state = new_state,
   build_screen = build_screen,
   handle_click = handle_click,
+  resolve_terminal_context = resolve_terminal_context,
+  diagnostic_summary = diagnostic_summary,
+  normalize_pointer_event = normalize_pointer_event,
+  stringify_error = stringify_error,
+  startup_summary = startup_summary,
+  apply_startup_status = apply_startup_status,
+  normalize_runtime_failure = normalize_runtime_failure,
+  finalize_exit = finalize_exit,
+  run_loop = run_loop,
   run = run,
+  parse_cli_mode = parse_cli_mode,
 }
 
 if mode == "__module__" then
   return exports
 end
 
-local ok, err = run()
+local ok, err = run({...})
 if ok == nil then
   io.stderr:write(tostring(err) .. "\n")
   os.exit(1)
