@@ -74,6 +74,13 @@ function M.make_runtime(spec)
     proxy_mode = default_proxy_mode(spec),
     timers = {},
     failures = spec.failures or {},
+    limits = {
+      max_screen_syncs = (spec.limits and spec.limits.max_screen_syncs) or 128,
+      max_event_pulls = (spec.limits and spec.limits.max_event_pulls) or 2000,
+    },
+    metrics = {
+      event_pulls = 0,
+    },
   }
 
   function rt:take_failure(name)
@@ -148,11 +155,15 @@ function M.make_runtime(spec)
     end
     self:ensure_screen_buffers(screen_address, screen.state.width, screen.state.height)
     self.text.client[screen_address] = util.copy_lines(self.text.server[screen_address])
-    self.logs.screen_syncs[#self.logs.screen_syncs + 1] = {
+    local log = self.logs.screen_syncs
+    log[#log + 1] = {
       screen_address = screen_address,
       lines = util.copy_lines(self.text.client[screen_address]),
       time = self.time,
     }
+    if #log > self.limits.max_screen_syncs then
+      table.remove(log, 1)
+    end
   end
 
   function rt:visible_lines(screen_address)
@@ -288,6 +299,31 @@ function M.make_runtime(spec)
       message = message,
       prompt = self.shell.prompt,
     }
+  end
+
+  function rt:close()
+    if self.closed then
+      return
+    end
+    self.closed = true
+    self.signals = {}
+    self.timers = {}
+    self.windows = {}
+    self.term = nil
+    self.text.server = {}
+    self.text.client = {}
+    self.text.dirty = {}
+    self.components.by_address = {}
+    self.components.by_type = {}
+    self.components.primary = {}
+    self.shell.stdout = {}
+    self.shell.stderr = {}
+    self.logs.invocations = {}
+    self.logs.signals = {}
+    self.logs.shell = {}
+    self.logs.screen_syncs = {}
+    self.logs.redstone = {}
+    self.logs.remote = {}
   end
 
   function rt:register_screen(spec_)

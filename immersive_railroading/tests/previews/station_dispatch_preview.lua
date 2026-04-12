@@ -13,7 +13,7 @@ local book = {
       x = 0, y = 64, z = 0,
       detector_ids = {"mine_front"},
       redstone_outputs = {
-        loader = {side = "north", strength = 15, active_high = true},
+        loader = {address = "redstone-a", side = "north", strength = 15, active_high = true},
       },
     },
     ["2"] = {
@@ -58,5 +58,27 @@ assert(valid.ok == true, "minimal valid schedule book should validate")
 book.SCHEDULES.ore_loop.entries[1].wait.groups[1][1].redstone = {output = "missing", mode = "while_pending"}
 local invalid = dispatch.validate_route_book(book)
 assert(invalid.ok == false, "unknown station output should fail dispatcher validation")
+
+do
+  local missing_redstone = {
+    STATIONS = {
+      a = {
+        redstone_outputs = {
+          loader = {address = "redstone-missing", side = "north"},
+        },
+      },
+    },
+  }
+  local resolver = dispatch._make_redstone_proxy_resolver(missing_redstone)
+  local redstone_proxy, redstone_error = resolver(missing_redstone.STATIONS.a.redstone_outputs.loader)
+  assert(
+    redstone_proxy == nil and (
+      tostring(redstone_error):find("redstone component address redstone%-missing is unavailable") ~= nil
+      or tostring(redstone_error):find("component API unavailable", 1, true) ~= nil
+    ),
+    "missing redstone addresses should return a friendly dispatcher error"
+  )
+  assert(dispatch._component_available("redstone") == false, "component availability helper should be defensive without a component api")
+end
 
 print("station_dispatch_preview ok")

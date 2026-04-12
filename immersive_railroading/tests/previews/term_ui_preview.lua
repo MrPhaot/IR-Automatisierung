@@ -4,6 +4,15 @@ local ui = assert(loadfile("./programs/lib/term_ui.lua"))()
 local required_ui = require("lib.term_ui")
 local editor = assert(loadfile("./programs/route_book_editor.lua"))("__module__")
 
+local function find_target(screen, predicate)
+  for _, target in ipairs(screen.targets or {}) do
+    if predicate(target) then
+      return target
+    end
+  end
+  return nil
+end
+
 local state = editor.new_state()
 local screen = editor.build_screen(state, 100, 30)
 local medium_screen = editor.build_screen(state, 70, 20)
@@ -57,6 +66,492 @@ for _, line in ipairs(compact_lines) do
 end
 assert(compact_has_status == true, "status line should remain visible")
 assert(table.concat(comfort_lines, "\n"):find("renderer=", 1, true) == nil, "normal editor status should not contain diagnostics")
+
+do
+  local modal = {
+    fields = {
+      editor.make_text_field({key = "name", label = "Name", value = "Station 1"}),
+      editor.make_repeatable_text_field({
+        key = "waypoints",
+        label = "Waypoints",
+        values = {"427,64,-148", "398,64,-210"},
+        min_items = 1,
+      }),
+    },
+    active_row = 1,
+    scroll_y = 0,
+  }
+  local rows = editor.build_modal_rows(modal)
+  assert(#rows == 4, "repeatable modal fields should expand into item and add rows")
+  assert(rows[1].kind == "text", "normal modal fields should stay text rows")
+  assert(rows[2].kind == "repeat_item" and rows[2].item_index == 1, "first repeatable value should become an item row")
+  assert(rows[4].kind == "repeat_add", "repeatable fields should end with an add row")
+
+  modal.active_row = 4
+  editor.ensure_modal_row_visible(modal, 2)
+  assert(modal.scroll_y == 2, "active modal rows should scroll into view")
+
+  local values = editor.collect_modal_values(modal)
+  assert(values.name == "Station 1", "collect_modal_values should keep text values")
+  assert(type(values.waypoints) == "table" and #values.waypoints == 2, "collect_modal_values should keep repeatable values as arrays")
+end
+
+do
+  local modal = {
+    fields = {
+      editor.make_repeatable_group_field({
+        key = "redstone_outputs",
+        label = "Redstone I/Os",
+        min_items = 0,
+        item_fields = {
+          {key = "id", label = "ID", default = ""},
+          {key = "address", label = "Address", default = ""},
+          {key = "side", label = "Side", default = "north"},
+          {key = "strength", label = "Strength", default = "15"},
+          {key = "pulse_ticks", label = "Pulse", default = "20"},
+          {key = "active_high", label = "Active High", default = "true"},
+        },
+        items = {
+          {id = "loader", address = "redstone-a", side = "north", strength = "15", pulse_ticks = "20", active_high = "true"},
+        },
+      }),
+    },
+    active_row = 1,
+    scroll_y = 0,
+  }
+  local rows = editor.build_modal_rows(modal)
+  assert(rows[1].kind == "group_item_field", "group rows should expose subfields as modal rows")
+  assert(rows[5].kind == "group_item_field", "all group subfields should become modal rows")
+  assert(rows[6].kind == "group_item_field", "all configured group item fields should stay visible")
+  assert(rows[7].kind == "group_add", "group fields should expose an add row")
+  local values = editor.collect_modal_values(modal)
+  assert(type(values.redstone_outputs) == "table" and values.redstone_outputs[1].id == "loader", "group modal values should serialize as object arrays")
+end
+
+do
+  local state = editor.new_state()
+  state.modal = {
+    title = "Edit Station",
+    fields = {
+      editor.make_repeatable_group_field({
+        key = "redstone_outputs",
+        label = "Redstone I/Os",
+        min_items = 0,
+        item_fields = {
+          {key = "id", label = "ID", default = ""},
+          {key = "address", label = "Address", default = ""},
+          {key = "side", label = "Side", default = "north"},
+          {key = "strength", label = "Strength", default = "15"},
+          {key = "pulse_ticks", label = "Pulse", default = "20"},
+          {key = "active_high", label = "Active High", default = "true"},
+        },
+        items = {},
+      }),
+    },
+    active_row = 1,
+    scroll_y = 0,
+    on_submit = function()
+      return true
+    end,
+  }
+  local modal_screen = editor.build_screen(state, 100, 30)
+  local modal_text = table.concat(ui.render_lines(100, 30, modal_screen.buffer), "\n")
+  assert(modal_text:find("Redstone I/Os %[%+%]") ~= nil, "empty redstone io add row should show its label")
+end
+
+do
+  local state = editor.new_state()
+  state.modal = {
+    title = "Edit Station",
+    fields = {
+      editor.make_repeatable_group_field({
+        key = "redstone_outputs",
+        label = "Redstone I/Os",
+        min_items = 0,
+        item_fields = {
+          {key = "id", label = "ID", default = ""},
+          {key = "address", label = "Address", default = ""},
+          {key = "side", label = "Side", default = "north"},
+          {key = "strength", label = "Strength", default = "15"},
+          {key = "pulse_ticks", label = "Pulse", default = "20"},
+          {key = "active_high", label = "Active High", default = "true"},
+        },
+        items = {
+          {id = "", address = "", side = "north", strength = "15", pulse_ticks = "20", active_high = "true"},
+        },
+      }),
+    },
+    active_row = 1,
+    scroll_y = 0,
+    on_submit = function()
+      return true
+    end,
+  }
+  local before_rows = editor.build_modal_rows(state.modal)
+  assert(#before_rows == 7, "single redstone io block should render six subfields plus add row")
+  editor.handle_key_down(state, 0, 14)
+  local after_rows = editor.build_modal_rows(state.modal)
+  assert(#after_rows == 7, "backspace on empty group subfield should not delete the redstone io block")
+  editor.handle_key_down(state, 0, 211)
+  local after_delete_rows = editor.build_modal_rows(state.modal)
+  assert(#after_delete_rows == 7, "delete on empty group subfield should not delete the redstone io block")
+end
+
+do
+  local state = editor.new_state()
+  state.modal = {
+    title = "Edit Station",
+    fields = {
+      editor.make_repeatable_group_field({
+        key = "redstone_outputs",
+        label = "Redstone I/Os",
+        min_items = 0,
+        item_fields = {
+          {key = "id", label = "ID", default = ""},
+          {key = "address", label = "Address", default = ""},
+          {key = "side", label = "Side", default = "north", options = {"north", "south"}},
+          {key = "strength", label = "Strength", default = "15"},
+          {key = "pulse_ticks", label = "Pulse", default = "20"},
+          {key = "active_high", label = "Active High", default = "true", options = {"false", "true"}},
+        },
+        items = {
+          {id = "loader", address = "redstone-a", side = "north", strength = "15", pulse_ticks = "20", active_high = "true"},
+        },
+      }),
+    },
+    active_row = 3,
+    scroll_y = 0,
+    on_submit = function()
+      return true
+    end,
+  }
+  editor.handle_key_down(state, 0, 205)
+  local row = editor.build_modal_rows(state.modal)[3]
+  assert(row.subfield.value == "south", "group choice subfields should cycle with keyboard input")
+end
+
+do
+  local chain_field = editor.make_condition_chain_field(nil)
+  local modal = {
+    fields = {chain_field},
+    active_row = 1,
+    scroll_y = 0,
+  }
+  local rows = editor.build_modal_rows(modal)
+  assert(rows[1].kind == "section", "condition-chain rows should start with a section header")
+  assert(rows[2].kind == "chain_route", "condition-chain rows should expose the route editor after the section header")
+  assert(rows[3].kind == "section", "condition-chain rows should add a wait-chain section header")
+  assert(rows[4].kind == "chain_tokens", "condition-chain rows should expose chain tokens")
+  assert(rows[4].line.tokens[1].kind == "plus", "empty chains should begin with a start plus token")
+  local values = editor.collect_modal_values({
+    fields = {chain_field},
+  })
+  assert(values.wait_chain.route == "", "condition-chain collection should keep the route field")
+  assert(type(values.wait_chain.groups) == "table" and values.wait_chain.groups[1][1].type == "time_passed", "empty condition chains should fall back to a default wait group")
+end
+
+do
+  local condition = editor.make_chain_condition({
+    type = "cargo_percent",
+    comparator = ">=",
+    value = 90,
+    scope = {detector_id = "mine_front"},
+    redstone = {output = "loader", mode = "while_pending"},
+  })
+  local runtime = editor.runtime_condition_from_editor(condition)
+  assert(runtime.type == "cargo_percent", "runtime condition conversion should keep the type")
+  assert(runtime.comparator == ">=" and runtime.value == 90, "runtime condition conversion should keep comparator conditions")
+  assert(type(runtime.scope) == "table" and runtime.scope.detector_id == "mine_front", "runtime condition conversion should parse detector scopes")
+  assert(runtime.redstone.output == "loader" and runtime.redstone.mode == "while_pending", "runtime condition conversion should keep per-condition redstone bindings")
+end
+
+do
+  local groups = editor.runtime_groups_from_chain({
+    groups = {
+      {
+        conditions = {
+          editor.make_chain_condition({type = "time_passed", seconds = 5}),
+          editor.make_chain_condition({type = "inactivity", seconds = 10}),
+        },
+      },
+      {
+        conditions = {
+          editor.make_chain_condition({type = "cargo_percent", comparator = ">=", value = 90, scope = "station_any_detector"}),
+        },
+      },
+    },
+  })
+  assert(#groups == 2 and #groups[1] == 2 and #groups[2] == 1, "runtime_groups_from_chain should preserve AND/OR structure")
+end
+
+do
+  local book = editor.new_state().book
+  book.STATIONS.mine = {
+    display_name = "Mine",
+    detector_ids = {},
+    redstone_outputs = {
+      loader = {address = "redstone-a"},
+      depart = {address = "redstone-b"},
+    },
+  }
+  book.ROUTES.ore = {waypoints = {"mid", "mine"}}
+  assert(editor.route_destination_station_id(book, "ore") == "mine", "route destination helper should resolve the last station waypoint")
+  local ids = editor.available_redstone_ids_for_route_destination(book, "ore")
+  assert(#ids == 2 and ids[1] == "depart" and ids[2] == "loader", "available redstone ids should come from the route destination station")
+end
+
+do
+  local state = editor.new_state()
+  state.book.STATIONS.mine = {
+    display_name = "Mine",
+    detector_ids = {},
+    redstone_outputs = {
+      loader = {address = "redstone-a"},
+    },
+  }
+  state.book.ROUTES.ore = {waypoints = {"mid", "mine"}}
+  state.modal = {
+    title = "Edit Schedule",
+    fields = {
+      editor.make_condition_chain_field({
+        cyclic = false,
+        entries = {
+          {
+            route = "ore",
+            wait = {groups = {}},
+          },
+        },
+      }),
+    },
+    active_row = 1,
+    scroll_y = 0,
+    on_submit = function()
+      return true
+    end,
+  }
+  local modal_screen = editor.build_screen(state, 100, 30)
+  local start_target = find_target(modal_screen, function(target)
+    return target.id == "modal:chain:start"
+  end)
+  assert(start_target ~= nil, "empty condition chains should expose a clickable start plus")
+  assert(editor.handle_click(state, start_target.x, start_target.y, modal_screen) == true, "clicking the start plus should be handled")
+  local chain_field = state.modal.fields[1]
+  assert(chain_field.chooser and chain_field.chooser.kind == "condition_type", "first chain plus should open the condition chooser")
+
+  chain_field.chooser.selected = 1
+  local chooser_screen = editor.build_screen(state, 100, 30)
+  local first_option = find_target(chooser_screen, function(target)
+    return target.id == "modal:chain:chooser:1:1"
+  end)
+  assert(first_option ~= nil, "condition chooser should expose clickable options")
+  editor.handle_click(state, first_option.x, first_option.y, chooser_screen)
+  assert(#chain_field.groups == 1 and #chain_field.groups[1].conditions == 1, "choosing a time condition should insert the first condition into the first group")
+
+  local after_screen = editor.build_screen(state, 100, 30)
+  local plus_target = find_target(after_screen, function(target)
+    return target.id == "modal:chain:add:1:1"
+  end)
+  assert(plus_target ~= nil, "existing conditions should expose an add-after plus")
+  editor.handle_click(state, plus_target.x, plus_target.y, after_screen)
+  assert(chain_field.chooser and chain_field.chooser.kind == "operator", "adding after a condition should open the operator chooser first")
+
+  local operator_screen = editor.build_screen(state, 100, 30)
+  local and_target = find_target(operator_screen, function(target)
+    return target.id == "modal:chain:chooser:1:1"
+  end)
+  editor.handle_click(state, and_target.x, and_target.y, operator_screen)
+  assert(chain_field.chooser and chain_field.chooser.kind == "condition_type", "operator choice should be followed by the condition chooser")
+end
+
+do
+  local state = editor.new_state()
+  state.book.STATIONS.mine = {
+    display_name = "Mine",
+    detector_ids = {},
+    redstone_outputs = {
+      loader = {address = "redstone-a"},
+    },
+  }
+  state.book.ROUTES.ore = {waypoints = {"mid", "mine"}}
+  local chain_field = editor.make_condition_chain_field({
+    cyclic = false,
+    entries = {
+      {
+        route = "ore",
+        wait = {
+          groups = {
+            {
+              {
+                type = "cargo_percent",
+                comparator = ">=",
+                value = 90,
+                scope = "station_any_detector",
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  state.modal = {
+    title = "Edit Schedule",
+    fields = {chain_field},
+    active_row = 1,
+    scroll_y = 0,
+    on_submit = function()
+      return true
+    end,
+  }
+  local rows = editor.build_modal_rows(state.modal)
+  local saw_comparator = false
+  local saw_value = false
+  local saw_scope = false
+  local saw_seconds = false
+  for _, row in ipairs(rows) do
+    if row.kind == "chain_condition_detail" and row.detail == "comparator" then saw_comparator = true end
+    if row.kind == "chain_condition_detail" and row.detail == "value" then saw_value = true end
+    if row.kind == "chain_condition_detail" and row.detail == "scope" then saw_scope = true end
+    if row.kind == "chain_condition_detail" and row.detail == "seconds" then saw_seconds = true end
+  end
+  assert(saw_comparator and saw_value and saw_scope, "comparator conditions should expose comparator, value, and scope details")
+  assert(saw_seconds == false, "comparator conditions should hide the seconds field")
+
+  local type_row_index
+  local scope_row_index
+  for index, row in ipairs(rows) do
+    if row.kind == "chain_condition_detail" and row.detail == "type" then type_row_index = index end
+    if row.kind == "chain_condition_detail" and row.detail == "scope" then scope_row_index = index end
+  end
+  state.modal.active_row = type_row_index
+  editor.handle_key_down(state, 0, 28)
+  assert(chain_field.chooser and chain_field.chooser.kind == "existing_condition_type", "existing conditions should expose a type chooser")
+  chain_field.chooser = nil
+  state.modal.active_row = scope_row_index
+  editor.handle_key_down(state, 0, 28)
+  assert(chain_field.chooser and chain_field.chooser.kind == "scope", "scope should be selected from a chooser menu")
+  local scope_options = chain_field.chooser.options or {}
+  local saw_station_any = false
+  for _, option in ipairs(scope_options) do
+    if option == "station_any_detector" then
+      saw_station_any = true
+    end
+  end
+  assert(saw_station_any == true, "scope chooser should include station scope options")
+  chain_field.chooser = nil
+
+  local modal_screen = editor.build_screen(state, 100, 30)
+  local redstone_target = find_target(modal_screen, function(target)
+    return type(target.id) == "string" and target.id:find("^modal:chain:redstone:add:", 1, false) ~= nil
+  end)
+  assert(redstone_target ~= nil, "selected conditions should expose a clickable redstone add control")
+  editor.handle_click(state, redstone_target.x, redstone_target.y, modal_screen)
+  assert(chain_field.chooser and chain_field.chooser.kind == "redstone_output", "redstone add should open the destination-station I/O chooser")
+
+  local redstone_output_screen = editor.build_screen(state, 100, 30)
+  local output_target = find_target(redstone_output_screen, function(target)
+    return target.id == "modal:chain:chooser:1:1"
+  end)
+  editor.handle_click(state, output_target.x, output_target.y, redstone_output_screen)
+  assert(chain_field.chooser and chain_field.chooser.kind == "redstone_mode", "selecting a redstone I/O should open the redstone mode chooser")
+
+  local mode_screen = editor.build_screen(state, 100, 30)
+  local mode_target = find_target(mode_screen, function(target)
+    return target.id == "modal:chain:chooser:1:1"
+  end)
+  editor.handle_click(state, mode_target.x, mode_target.y, mode_screen)
+  assert(chain_field.groups[1].conditions[1].redstone.output == "loader", "redstone chooser flow should attach the selected output")
+  assert(chain_field.groups[1].conditions[1].redstone.mode == "while_pending", "redstone chooser flow should attach the selected mode")
+
+  local label_tokens = editor.chain_tokens_from_groups(chain_field.groups)
+  local saw_time_redstone = false
+  for _, token in ipairs(label_tokens) do
+    if token.kind == "condition" and token.label:find("io=loader", 1, true) ~= nil then
+      saw_time_redstone = true
+      break
+    end
+  end
+  assert(saw_time_redstone == true, "condition labels should surface redstone bindings even on time-based conditions")
+
+  local remove_screen = editor.build_screen(state, 100, 30)
+  local remove_target = find_target(remove_screen, function(target)
+    return type(target.id) == "string" and target.id:find("^modal:chain:redstone:remove:", 1, false) ~= nil
+  end)
+  assert(remove_target ~= nil, "attached redstone should expose a remove control")
+  editor.handle_click(state, remove_target.x, remove_target.y, remove_screen)
+  assert(chain_field.groups[1].conditions[1].redstone == nil, "redstone remove should clear the condition redstone binding")
+end
+
+do
+  local repaired = editor.split_legacy_waypoint_string("[427,64,-148],[398,64,-210]")
+  assert(#repaired == 2, "legacy waypoint strings should split into separate rows")
+  local collected = editor.collect_waypoints({
+    waypoints = {"427,64,-148", "[398,64,-210]", "Depot"},
+  })
+  assert(type(collected[1]) == "table" and collected[1].x == 427 and collected[1].z == -148, "coordinate rows should parse into xyz tables")
+  assert(type(collected[2]) == "table" and collected[2].x == 398 and collected[2].z == -210, "bracketed coordinate rows should parse into xyz tables")
+  assert(collected[3] == "Depot", "non-coordinate waypoint rows should stay strings")
+  local detector_ids = editor.collect_detector_ids({
+    detector_ids = {"  north ", "", "south"},
+  })
+  assert(#detector_ids == 2 and detector_ids[1] == "north" and detector_ids[2] == "south", "detector id rows should trim blanks and discard empties")
+end
+
+do
+  local runtime_info = editor.inspect_redstone_runtime({
+    STATIONS = {
+      mine = {
+        redstone_outputs = {
+          loader = {address = "redstone-a", side = "north", strength = 12, pulse_ticks = 10, active_high = false},
+        },
+      },
+    },
+    SCHEDULES = {
+      ore_loop = {
+        entries = {
+          {
+            wait = {
+              groups = {
+                {
+                  {
+                    type = "time_passed",
+                    seconds = 5,
+                    redstone = {output = "loader", mode = "while_pending"},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  assert(runtime_info.required == true, "redstone runtime inspection should mark configured outputs as required")
+  assert(#runtime_info.outputs == 1 and runtime_info.outputs[1].output == "loader", "redstone runtime inspection should list configured outputs")
+  assert(#runtime_info.condition_refs == 1 and runtime_info.condition_refs[1].mode == "while_pending", "redstone runtime inspection should list schedule redstone references")
+  local rows = editor.redstone_output_rows_from_station({
+    redstone_outputs = {
+      loader = {address = "redstone-a", side = "north", strength = 15, pulse_ticks = 20, active_high = true},
+    },
+  })
+  assert(#rows == 1 and rows[1].id == "loader" and rows[1].address == "redstone-a", "station redstone outputs should round-trip into modal rows")
+  local ok_outputs, err_outputs = editor.validate_redstone_output_rows({
+    {id = "loader"},
+    {id = "loader"},
+  })
+  assert(ok_outputs == false and tostring(err_outputs):find("duplicated", 1, true) ~= nil, "duplicate redstone output names should be rejected")
+end
+
+do
+  local wrapped = editor.wrap_text("alpha beta superlongtokenvalue", 8)
+  assert(#wrapped >= 3, "wrap_text should expand long panel text into multiple lines")
+  assert(wrapped[1] == "alpha", "wrap_text should keep whole words when they fit")
+  assert(wrapped[2] == "beta", "wrap_text should continue with the next word on a new line when needed")
+
+  local inline_with_cursor = ({editor.inline_view("abcdef", 4, 0, 4, true)})[1]
+  local inline_without_cursor = ({editor.inline_view("abcdef", 4, 0, 4, false)})[1]
+  assert(inline_with_cursor:find("|", 1, true) ~= nil, "inline_view should show a cursor when requested")
+  assert(inline_without_cursor:find("|", 1, true) == nil, "inline_view should omit the cursor on inactive rows")
+end
 
 local saw_tab = false
 local saw_button = false
@@ -170,6 +665,86 @@ do
 
   local diagnose_message = editor.startup_summary(terminal_context, nil, {mode_name = "diagnose-ui"})
   assert(diagnose_message:find("renderer=term%-gpu") ~= nil, "diagnose-ui should still expose full diagnostics")
+end
+
+do
+  local save_state = editor.new_state()
+  save_state.active_tab = 5
+  save_state.book.STATIONS.mine = {
+    display_name = "Mine",
+    x = 1, y = 64, z = 1,
+    detector_ids = {},
+    redstone_outputs = {
+      loader = {address = "redstone-a", side = "north", strength = 15, pulse_ticks = 20, active_high = true},
+    },
+  }
+  save_state.book.SCHEDULES.loop = {
+    cyclic = false,
+    entries = {
+      {
+        route = "ore",
+        wait = {
+          groups = {
+            {
+              {
+                type = "time_passed",
+                seconds = 0,
+                redstone = {output = "loader", mode = "while_pending"},
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  local save_screen = editor.build_screen(save_state, 100, 30)
+  local save_lines = ui.render_lines(100, 30, save_screen.buffer)
+  local save_text = table.concat(save_lines, "\n")
+  assert(save_text:find("Run schedule: station_dispatch run <schedule>", 1, true) ~= nil, "save tab should show schedule runtime help")
+  assert(save_text:find("Run route: train_controller route <route>", 1, true) ~= nil, "save tab should show direct route help")
+  assert(save_text:find("Schedules run on the active ir_remote_control train.", 1, true) ~= nil, "save tab should explain runtime schedule ownership")
+  assert(save_text:find("Redstone runtime: required", 1, true) ~= nil, "save tab should show redstone runtime requirements")
+  assert(save_text:find("Schedule redstone binds by I/O ID to the destination station.", 1, true) ~= nil, "save tab should explain redstone schedule binding by I/O id")
+  assert(save_text:find("Station I/O address selects which redstone module is used.", 1, true) ~= nil, "save tab should explain station io addresses")
+  assert(save_text:find("Conditions in a group are AND.", 1, true) ~= nil, "save tab should explain AND semantics")
+  assert(save_text:find("Groups are OR.", 1, true) ~= nil, "save tab should explain OR semantics")
+  assert(save_text:find("Click [+] to add a condition, then choose AND or OR before the next one.", 1, true) ~= nil, "save tab should explain the add-and-choose flow")
+  assert(save_text:find("Comparator-based conditions open a comparator chooser before returning.", 1, true) ~= nil, "save tab should explain comparator chooser behavior")
+  assert(save_text:find("Redstone is attached per condition via the Redstone field.", 1, true) ~= nil, "save tab should explain per-condition redstone")
+  assert(save_text:find("read-only here", 1, true) == nil, "save tab should no longer claim that redstone outputs are read-only")
+  assert(save_text:find("uses redstone: loop entry 1 -> loader (while_pending)", 1, true) ~= nil, "save tab should summarize redstone-linked wait conditions")
+end
+
+do
+  local wrap_state = editor.new_state()
+  local buffer = {}
+  local info = editor.render_wrapped_lines(buffer, 1, 1, 8, 2, {"alpha beta superlongtokenvalue"}, 0)
+  local lines = ui.render_lines(8, 2, buffer)
+  assert(info.line_count == 5 and info.max_scroll == 3, "render_wrapped_lines should expand wrapped text and report scroll bounds")
+  assert(lines[1]:find("alpha", 1, true) ~= nil, "wrapped renderer should keep the first readable line")
+  assert(lines[2]:find("beta", 1, true) ~= nil, "wrapped renderer should continue on following lines without clipping markers")
+end
+
+do
+  local modal_state = editor.new_state()
+  local field = editor.make_repeatable_text_field({
+    key = "waypoints",
+    label = "Waypoints",
+    values = {"427,64,-148", "398,64,-210"},
+    min_items = 1,
+  })
+  local active_row = editor.build_modal_rows({
+    fields = {field},
+    active_row = 1,
+  })[1]
+  local inactive_row = editor.build_modal_rows({
+    fields = {field},
+    active_row = 2,
+  })[2]
+  local active_text = editor.inline_view(active_row.item.value, active_row.item.cursor, active_row.item.scroll_x, 12, true)
+  local inactive_text = editor.inline_view(inactive_row.item.value, inactive_row.item.cursor, inactive_row.item.scroll_x, 12, false)
+  assert(({active_text})[1]:find("|", 1, true) ~= nil, "active modal rows should show a cursor")
+  assert(({inactive_text})[1]:find("|", 1, true) == nil, "inactive modal rows should not show a cursor")
 end
 
 local termless_context = editor.resolve_terminal_context({

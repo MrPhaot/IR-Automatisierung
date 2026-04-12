@@ -5,6 +5,26 @@ local M = {}
 local MODULES = {"component", "event", "term", "tty", "keyboard", "unicode", "computer", "filesystem", "shell"}
 local PROJECT_MODULES = {"lib.term_ui", "lib.oc_proxy"}
 
+local function restore_modules(saved_loaded, saved_preload, saved_component, saved_computer, rt)
+  _G.component = saved_component
+  _G.computer = saved_computer
+
+  for _, name in ipairs(MODULES) do
+    package.loaded[name] = saved_loaded[name]
+    package.preload[name] = saved_preload[name]
+  end
+
+  for _, name in ipairs(PROJECT_MODULES) do
+    package.loaded[name] = saved_loaded[name]
+  end
+
+  if rt then
+    pcall(function()
+      rt:close()
+    end)
+  end
+end
+
 function M.with_runtime(spec, fn)
   local rt = runtime.make_runtime(spec or {})
   local saved_loaded = {}
@@ -32,15 +52,7 @@ function M.with_runtime(spec, fn)
     return fn(rt)
   end, debug.traceback)
 
-  _G.component = saved_component
-  _G.computer = saved_computer
-  for _, name in ipairs(MODULES) do
-    package.loaded[name] = saved_loaded[name]
-    package.preload[name] = saved_preload[name]
-  end
-  for _, name in ipairs(PROJECT_MODULES) do
-    package.loaded[name] = saved_loaded[name]
-  end
+  restore_modules(saved_loaded, saved_preload, saved_component, saved_computer, rt)
 
   if not ok then
     error(a)

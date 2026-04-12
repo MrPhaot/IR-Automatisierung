@@ -1,19 +1,25 @@
 local M = {}
+local oc_proxy = require("lib.oc_proxy")
 
 local SIDE_ALIASES = {
-  bottom = "bottom",
-  top = "top",
-  back = "back",
-  front = "front",
-  right = "right",
-  left = "left",
-  north = "north",
-  south = "south",
-  west = "west",
-  east = "east",
+  bottom = 0,
+  down = 0,
+  top = 1,
+  up = 1,
+  back = 2,
+  north = 2,
+  front = 3,
+  south = 3,
+  right = 4,
+  west = 4,
+  left = 5,
+  east = 5,
 }
 
 function M.normalize_side(side)
+  if type(side) == "number" then
+    return side
+  end
   if type(side) ~= "string" then
     return nil
   end
@@ -43,13 +49,16 @@ function M.validate_outputs(outputs)
   }
 end
 
-function M.make_controller(redstone_proxy, log_fn, now_fn)
+function M.make_controller(resolve_redstone_proxy, log_fn, now_fn, component_api)
   local controller = {
-    redstone = redstone_proxy,
+    resolve_redstone_proxy = resolve_redstone_proxy or function()
+      return nil
+    end,
     log = log_fn or function() end,
     now = now_fn or os.clock,
     states = {},
     pulses = {},
+    component = component_api,
   }
 
   local function inactive_level(config)
@@ -60,23 +69,33 @@ function M.make_controller(redstone_proxy, log_fn, now_fn)
     return config.active_high == false and 0 or (config.strength or 15)
   end
 
+  local function state_key(name, config, side)
+    local address = config and config.address or "__primary__"
+    return ("%s:%s:%s"):format(tostring(address), tostring(name), tostring(side))
+  end
+
   function controller:set_output(name, config, active)
-    if not self.redstone then
-      error("component.redstone is required for configured station outputs")
+    local redstone, redstone_error = self.resolve_redstone_proxy(config)
+    if not redstone then
+      error(redstone_error or "component.redstone is required for configured station outputs")
     end
     local side = M.normalize_side(config.side)
     if not side then
       error(("invalid redstone side for output %s"):format(name))
     end
     local target = active and active_level(config) or inactive_level(config)
-    local key = ("%s:%s"):format(name, side)
+    local key = state_key(name, config, side)
     if self.states[key] == target then
       return
     end
-    self.redstone.setOutput(side, target)
+    local ok, invoke_error = oc_proxy.invoke(self.component, redstone, "setOutput", side, target)
+    if not ok then
+      error(tostring(invoke_error or ("failed to set redstone output " .. tostring(name))))
+    end
     self.states[key] = target
     self.log(active and "redstone_output_active" or "redstone_output_inactive", {
       output = name,
+      address = tostring(config and config.address or "<primary>"),
       side = side,
       strength = target,
     })
@@ -91,17 +110,20 @@ function M.make_controller(redstone_proxy, log_fn, now_fn)
   function controller:pulse(name, config)
     local duration = (config.pulse_ticks or 20) / 20
     self:set_output(name, config, true)
-    self.pulses[name] = self.now() + duration
+    self.pulses[state_key(name, config, M.normalize_side(config.side) or config.side)] = {
+      deadline = self.now() + duration,
+      name = name,
+    }
   end
 
   function controller:tick(outputs)
     local now = self.now()
-    for name, deadline in pairs(self.pulses) do
-      if now >= deadline then
-        self.pulses[name] = nil
-        local config = outputs and outputs[name]
+    for key, pulse in pairs(self.pulses) do
+      if now >= pulse.deadline then
+        self.pulses[key] = nil
+        local config = outputs and outputs[pulse.name]
         if config then
-          self:set_output(name, config, false)
+          self:set_output(pulse.name, config, false)
         end
       end
     end

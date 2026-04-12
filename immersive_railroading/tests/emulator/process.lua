@@ -4,6 +4,10 @@ local function is_terminated(err)
   return type(err) == "table" and err.reason == "terminated"
 end
 
+local function is_timeout(err)
+  return type(err) == "table" and err.reason == "timeout"
+end
+
 function M.load_module(path)
   local chunk = assert(loadfile(path))
   return chunk("__module__")
@@ -21,17 +25,26 @@ function M.run_program(program, argv, options)
 
   local ok, success, err = xpcall(function()
     return entry(argv or {})
-  end, debug.traceback)
+  end, function(problem)
+    return problem
+  end)
 
   local result_ok, result_err
-  if not ok then
-    result_ok = nil
-    result_err = success
-  elseif success == nil then
-    result_ok = nil
-    result_err = err
-  else
+  if ok then
+    if success == nil then
+      result_ok = nil
+      result_err = tostring(err)
+    else
+      result_ok = true
+    end
+  elseif is_terminated(success) then
     result_ok = true
+  elseif is_timeout(success) then
+    result_ok = nil
+    result_err = "emulator timeout: " .. tostring(success.message or "timeout")
+  else
+    result_ok = nil
+    result_err = tostring(success)
   end
 
   if options.runtime and options.shell_redraw then
@@ -105,6 +118,15 @@ function M.run_script(path, argv, options)
       result_err = table.concat(stderr_lines) ~= "" and table.concat(stderr_lines) or tostring(result.message or "terminated")
       meta = {exit_code = result.code, stderr = table.concat(stderr_lines), stdout = table.concat(stdout_lines), terminated = true}
     end
+  elseif is_timeout(result) then
+    result_ok = nil
+    result_err = "emulator timeout: " .. tostring(result.message or "timeout")
+    meta = {
+      exit_code = 124,
+      stderr = table.concat(stderr_lines),
+      stdout = table.concat(stdout_lines),
+      timeout = true,
+    }
   else
     result_ok = nil
     result_err = tostring(result)

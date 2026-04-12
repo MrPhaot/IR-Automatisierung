@@ -105,6 +105,39 @@ local function sleep_for(seconds)
   return true
 end
 
+local function component_available(name)
+  if not component then
+    return false
+  end
+  if type(component.isAvailable) == "function" then
+    local ok, value = pcall(component.isAvailable, name)
+    return ok and value == true
+  end
+  local ok, value = pcall(function()
+    return component[name]
+  end)
+  return ok and value ~= nil
+end
+
+local function get_primary_component(name)
+  if not component_available(name) then
+    return nil
+  end
+  if type(component.getPrimary) == "function" then
+    local ok, proxy = pcall(component.getPrimary, name)
+    if ok and proxy ~= nil then
+      return proxy
+    end
+  end
+  local ok, proxy = pcall(function()
+    return component[name]
+  end)
+  if ok and proxy ~= nil then
+    return proxy
+  end
+  return nil
+end
+
 local function make_logger(path)
   if not path then
     return nil
@@ -183,22 +216,67 @@ local function validate_route_book(route_book, schedule_name)
 end
 
 local function get_remote()
-  if not component or not component.ir_remote_control then
+  local remote = get_primary_component("ir_remote_control")
+  if not remote then
     return nil, "component.ir_remote_control is not available"
   end
-  return component.ir_remote_control
+  return remote
 end
 
-local function get_redstone_proxy(route_book)
+local function get_redstone_component(address)
+  if not component then
+    return nil, "component API unavailable"
+  end
+
+  if type(address) == "string" and address ~= "" then
+    if type(component.proxy) ~= "function" then
+      return nil, ("component.proxy is unavailable for redstone address %s"):format(address)
+    end
+    local ok, proxy = pcall(component.proxy, address)
+    if not ok or proxy == nil then
+      return nil, ("redstone component address %s is unavailable"):format(address)
+    end
+    return proxy
+  end
+
+  local primary = get_primary_component("redstone")
+  if not primary then
+    return nil, "component.redstone is required for configured station outputs"
+  end
+  return primary
+end
+
+local function make_redstone_proxy_resolver(route_book)
+  local cache = {}
+  local required = false
+
   for _, station in pairs(route_book.STATIONS or {}) do
     if next(station.redstone_outputs or {}) ~= nil then
-      if not component or not component.redstone then
-        return nil, "component.redstone is required for configured station outputs"
-      end
-      return component.redstone
+      required = true
+      break
     end
   end
-  return component and component.redstone or nil
+
+  if not required then
+    return function()
+      return nil
+    end
+  end
+
+  return function(config)
+    local address = config and config.address or nil
+    local cache_key = address ~= nil and address ~= "" and address or "__primary__"
+    if cache[cache_key] ~= nil then
+      return cache[cache_key]
+    end
+
+    local proxy, err = get_redstone_component(address)
+    if not proxy then
+      return nil, err
+    end
+    cache[cache_key] = proxy
+    return proxy
+  end
 end
 
 local function make_detector_reader(route_book)
@@ -324,15 +402,17 @@ local function run(schedule_name, options)
     return nil, logger_error
   end
 
-  local redstone_proxy, redstone_error = get_redstone_proxy(route_book)
-  if redstone_error then
-    return nil, redstone_error
-  end
+  local resolve_redstone_proxy = make_redstone_proxy_resolver(route_book)
 
   local detector_reader = make_detector_reader(route_book)
-  local io_controller = redstone_io.make_controller(redstone_proxy, function(event_name, payload)
-    emit_event(logger, event_name, payload)
-  end, uptime)
+  local io_controller = redstone_io.make_controller(
+    resolve_redstone_proxy,
+    function(event_name, payload)
+      emit_event(logger, event_name, payload)
+    end,
+    uptime,
+    component
+  )
 
   local cycle = 0
   repeat
@@ -471,6 +551,11 @@ local exports = {
   inspect = inspect,
   detectors = detectors,
   validate_route_book = validate_route_book,
+  _component_available = component_available,
+  _get_primary_component = get_primary_component,
+  _get_redstone_component = get_redstone_component,
+  _make_redstone_proxy_resolver = make_redstone_proxy_resolver,
+  _get_remote = get_remote,
   main = main,
 }
 

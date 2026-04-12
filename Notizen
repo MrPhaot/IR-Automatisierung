@@ -57,3 +57,14 @@ Gib mir den Plan nur dann, wenn:
 - er ist vollständig und braucht keine weitere Ergänzungen, etwa Codestücke oder technische Details
 - die Implementierungsvorschläge wurden überprüft und getestet und sind fehlerfrei
 - der Plan wird einen Hand-Off-Markdown erstellen, der alle nötigen Infos/Kontext für einen anderen Agenten in einer separaten Session enthält; dafür wird auch ein Prompt im Einklang mit Context Engineering benötigt
+aypoints:
+
+(Beispiel Waypoints: 
+Waypoints: [1] (irgendwelche Koordinaten)
+           [+]
+-->
+Waypoints: [1] (irgendwelche Koordinaten)
+           [2]
+           [+]
++ [condition] + AND + [condition]
+                OR

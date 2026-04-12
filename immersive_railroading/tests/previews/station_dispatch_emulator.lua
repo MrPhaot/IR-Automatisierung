@@ -34,4 +34,32 @@ emulator.with_runtime({
   assert(computer.uptime() >= before + 0.5, "event/computer time should advance reproducibly in the emulator")
 end)
 
+emulator.with_runtime({
+  redstone = false,
+}, function(rt)
+  local mod = process.load_module("./programs/station_dispatch.lua")
+  local resolver = mod._make_redstone_proxy_resolver({
+    STATIONS = {
+      mine = {
+        redstone_outputs = {
+          loader = {address = "redstone-missing", side = "north", strength = 15},
+        },
+      },
+    },
+  })
+  local redstone_proxy, redstone_error = resolver({address = "redstone-missing", side = "north", strength = 15})
+  assert(redstone_proxy == nil, "dispatcher should not invent a missing redstone primary")
+  assert(tostring(redstone_error):find("redstone component address redstone%-missing is unavailable") ~= nil, "missing redstone addresses should return a friendly dispatcher error")
+end)
+
+emulator.with_runtime({
+  redstone = {},
+  ir_remote_control = false,
+}, function(rt)
+  local mod = process.load_module("./programs/station_dispatch.lua")
+  local remote, remote_error = mod._get_remote()
+  assert(remote == nil, "dispatcher should not invent a missing ir_remote_control primary")
+  assert(remote_error == "component.ir_remote_control is not available", "missing ir_remote_control should return a friendly dispatcher error")
+end)
+
 print("station_dispatch_emulator ok")

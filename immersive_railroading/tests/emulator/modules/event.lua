@@ -4,6 +4,15 @@ function M.make(rt)
   local event = {}
 
   function event.pull(timeout)
+    rt.metrics.event_pulls = (rt.metrics.event_pulls or 0) + 1
+    if rt.metrics.event_pulls > (rt.limits and rt.limits.max_event_pulls or 2000) then
+      error({
+        reason = "timeout",
+        code = 124,
+        message = "event pull limit exceeded",
+      }, 0)
+    end
+
     local terminated = rt:take_failure("event_pull_terminated")
     if terminated then
       error({
