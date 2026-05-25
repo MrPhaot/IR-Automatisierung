@@ -5,9 +5,11 @@ local required_ui = require("lib.term_ui")
 local editor = assert(loadfile("./programs/route_book_editor.lua"))("__module__")
 
 local function find_target(screen, predicate)
-  for _, target in ipairs(screen.targets or {}) do
-    if predicate(target) then
-      return target
+  for _, group in ipairs({screen.modal_targets or {}, screen.targets or {}}) do
+    for _, target in ipairs(group) do
+      if predicate(target) then
+        return target
+      end
     end
   end
   return nil
@@ -225,9 +227,14 @@ do
       return true
     end,
   }
+  editor.handle_key_down(state, 0, 28)
+  local chooser_rows = editor.build_modal_rows(state.modal)
+  local chooser_row = chooser_rows[#chooser_rows]
+  assert(chooser_row.kind == "choice_chooser", "group choice subfields should open a chooser instead of cycling inline")
   editor.handle_key_down(state, 0, 205)
-  local row = editor.build_modal_rows(state.modal)[3]
-  assert(row.subfield.value == "south", "group choice subfields should cycle with keyboard input")
+  local moved_rows = editor.build_modal_rows(state.modal)
+  local moved_row = moved_rows[#moved_rows]
+  assert(moved_row.chooser.selected == 2, "choice chooser should move selection with keyboard input")
 end
 
 do
@@ -238,15 +245,11 @@ do
     scroll_y = 0,
   }
   local rows = editor.build_modal_rows(modal)
-  assert(rows[1].kind == "section", "condition-chain rows should start with a section header")
-  assert(rows[2].kind == "chain_route", "condition-chain rows should expose the route editor after the section header")
-  assert(rows[3].kind == "section", "condition-chain rows should add a wait-chain section header")
-  assert(rows[4].kind == "chain_tokens", "condition-chain rows should expose chain tokens")
-  assert(rows[4].line.tokens[1].kind == "plus", "empty chains should begin with a start plus token")
+  assert(rows[1].kind == "chain_tokens", "condition-chain rows should begin with chain tokens")
+  assert(rows[1].line.tokens[1].kind == "plus", "empty chains should begin with a start plus token")
   local values = editor.collect_modal_values({
     fields = {chain_field},
   })
-  assert(values.wait_chain.route == "", "condition-chain collection should keep the route field")
   assert(type(values.wait_chain.groups) == "table" and values.wait_chain.groups[1][1].type == "time_passed", "empty condition chains should fall back to a default wait group")
 end
 
@@ -256,13 +259,25 @@ do
     comparator = ">=",
     value = 90,
     scope = {detector_id = "mine_front"},
-    redstone = {output = "loader", mode = "while_pending"},
   })
   local runtime = editor.runtime_condition_from_editor(condition)
   assert(runtime.type == "cargo_percent", "runtime condition conversion should keep the type")
   assert(runtime.comparator == ">=" and runtime.value == 90, "runtime condition conversion should keep comparator conditions")
   assert(type(runtime.scope) == "table" and runtime.scope.detector_id == "mine_front", "runtime condition conversion should parse detector scopes")
-  assert(runtime.redstone.output == "loader" and runtime.redstone.mode == "while_pending", "runtime condition conversion should keep per-condition redstone bindings")
+  assert(runtime.redstone == nil, "wait runtime conversion should no longer embed redstone into wait conditions")
+  local rules = editor.runtime_redstone_rules_from_editor({
+    rules = {
+      {
+        output = {value = "loader"},
+        groups = {
+          {
+            conditions = {condition},
+          },
+        },
+      },
+    },
+  })
+  assert(#rules == 1 and rules[1].output == "loader", "redstone editor should serialize dedicated rules")
 end
 
 do
@@ -313,6 +328,7 @@ do
   state.modal = {
     title = "Edit Schedule",
     fields = {
+      editor.make_text_field({key = "route", label = "Route", value = "ore"}),
       editor.make_condition_chain_field({
         cyclic = false,
         entries = {
@@ -330,18 +346,25 @@ do
     end,
   }
   local modal_screen = editor.build_screen(state, 100, 30)
+  assert(type(modal_screen.modal_targets) == "table" and #modal_screen.modal_targets > 0, "open modals should render dedicated modal targets")
   local start_target = find_target(modal_screen, function(target)
-    return target.id == "modal:chain:start"
+    return target.id == "modal:chain:plus" and target.modal_chain_position and target.modal_chain_position.location == "start"
   end)
   assert(start_target ~= nil, "empty condition chains should expose a clickable start plus")
   assert(editor.handle_click(state, start_target.x, start_target.y, modal_screen) == true, "clicking the start plus should be handled")
-  local chain_field = state.modal.fields[1]
-  assert(chain_field.chooser and chain_field.chooser.kind == "condition_type", "first chain plus should open the condition chooser")
+  local chain_field = state.modal.fields[2]
+  assert(chain_field.chooser and chain_field.chooser.kind == "operator", "first chain plus should open the join chooser")
 
-  chain_field.chooser.selected = 1
+  local operator_screen = editor.build_screen(state, 100, 30)
+  local operator_target = find_target(operator_screen, function(target)
+    return target.id == "modal:chain:chooser:2:1"
+  end)
+  editor.handle_click(state, operator_target.x, operator_target.y, operator_screen)
+  assert(chain_field.chooser and chain_field.chooser.kind == "condition_type", "join chooser should lead into condition chooser")
+
   local chooser_screen = editor.build_screen(state, 100, 30)
   local first_option = find_target(chooser_screen, function(target)
-    return target.id == "modal:chain:chooser:1:1"
+    return target.id == "modal:chain:chooser:2:1"
   end)
   assert(first_option ~= nil, "condition chooser should expose clickable options")
   editor.handle_click(state, first_option.x, first_option.y, chooser_screen)
@@ -349,17 +372,17 @@ do
 
   local after_screen = editor.build_screen(state, 100, 30)
   local plus_target = find_target(after_screen, function(target)
-    return target.id == "modal:chain:add:1:1"
+    return target.id == "modal:chain:plus" and target.modal_chain_position and target.modal_chain_position.location == "end"
   end)
   assert(plus_target ~= nil, "existing conditions should expose an add-after plus")
   editor.handle_click(state, plus_target.x, plus_target.y, after_screen)
   assert(chain_field.chooser and chain_field.chooser.kind == "operator", "adding after a condition should open the operator chooser first")
 
-  local operator_screen = editor.build_screen(state, 100, 30)
-  local and_target = find_target(operator_screen, function(target)
-    return target.id == "modal:chain:chooser:1:1"
+  local next_operator_screen = editor.build_screen(state, 100, 30)
+  local and_target = find_target(next_operator_screen, function(target)
+    return target.id == "modal:chain:chooser:2:1"
   end)
-  editor.handle_click(state, and_target.x, and_target.y, operator_screen)
+  editor.handle_click(state, and_target.x, and_target.y, next_operator_screen)
   assert(chain_field.chooser and chain_field.chooser.kind == "condition_type", "operator choice should be followed by the condition chooser")
 end
 
@@ -395,7 +418,7 @@ do
   })
   state.modal = {
     title = "Edit Schedule",
-    fields = {chain_field},
+    fields = {editor.make_text_field({key = "route", label = "Route", value = "ore"}), chain_field},
     active_row = 1,
     scroll_y = 0,
     on_submit = function()
@@ -437,49 +460,70 @@ do
     end
   end
   assert(saw_station_any == true, "scope chooser should include station scope options")
-  chain_field.chooser = nil
+end
 
-  local modal_screen = editor.build_screen(state, 100, 30)
-  local redstone_target = find_target(modal_screen, function(target)
-    return type(target.id) == "string" and target.id:find("^modal:chain:redstone:add:", 1, false) ~= nil
+do
+  local state = editor.new_state()
+  state.book.STATIONS.mine = {
+    display_name = "Mine",
+    detector_ids = {},
+    redstone_outputs = {
+      loader = {address = "redstone-a"},
+    },
+  }
+  state.book.ROUTES.ore = {waypoints = {"mid", "mine"}}
+  local rule_field = editor.make_redstone_rules_field(nil, state.book)
+  state.modal = {
+    title = "Edit Schedule",
+    fields = {
+      editor.make_text_field({key = "route", label = "Route", value = "ore"}),
+      rule_field,
+    },
+    active_row = 2,
+    scroll_y = 0,
+    on_submit = function()
+      return true
+    end,
+  }
+  local screen = editor.build_screen(state, 100, 30)
+  local add_target = find_target(screen, function(target)
+    return target.id == "modal:redstone_rule:add:2"
   end)
-  assert(redstone_target ~= nil, "selected conditions should expose a clickable redstone add control")
-  editor.handle_click(state, redstone_target.x, redstone_target.y, modal_screen)
-  assert(chain_field.chooser and chain_field.chooser.kind == "redstone_output", "redstone add should open the destination-station I/O chooser")
-
-  local redstone_output_screen = editor.build_screen(state, 100, 30)
-  local output_target = find_target(redstone_output_screen, function(target)
-    return target.id == "modal:chain:chooser:1:1"
-  end)
-  editor.handle_click(state, output_target.x, output_target.y, redstone_output_screen)
-  assert(chain_field.chooser and chain_field.chooser.kind == "redstone_mode", "selecting a redstone I/O should open the redstone mode chooser")
-
-  local mode_screen = editor.build_screen(state, 100, 30)
-  local mode_target = find_target(mode_screen, function(target)
-    return target.id == "modal:chain:chooser:1:1"
-  end)
-  editor.handle_click(state, mode_target.x, mode_target.y, mode_screen)
-  assert(chain_field.groups[1].conditions[1].redstone.output == "loader", "redstone chooser flow should attach the selected output")
-  assert(chain_field.groups[1].conditions[1].redstone.mode == "while_pending", "redstone chooser flow should attach the selected mode")
-
-  local label_tokens = editor.chain_tokens_from_groups(chain_field.groups)
-  local saw_time_redstone = false
-  for _, token in ipairs(label_tokens) do
-    if token.kind == "condition" and token.label:find("io=loader", 1, true) ~= nil then
-      saw_time_redstone = true
+  assert(add_target ~= nil, "redstone rules should expose an add rule control")
+  editor.handle_click(state, add_target.x, add_target.y, screen)
+  assert(#rule_field.rules == 1, "redstone rule add should create a rule")
+  local rows = editor.build_modal_rows(state.modal)
+  local saw_selected_rule = false
+  local saw_selected_condition = false
+  for _, row in ipairs(rows) do
+    if row.kind == "section" and row.label == "Selected Redstone Rule" then saw_selected_rule = true end
+    if row.kind == "section" and row.label == "Selected Redstone Condition" then saw_selected_condition = true end
+  end
+  assert(saw_selected_rule == true, "schedule modal should render selected redstone rule section")
+  local output_row_index
+  for index, row in ipairs(rows) do
+    if row.kind == "redstone_rule_output" then
+      output_row_index = index
       break
     end
   end
-  assert(saw_time_redstone == true, "condition labels should surface redstone bindings even on time-based conditions")
-
-  local remove_screen = editor.build_screen(state, 100, 30)
-  local remove_target = find_target(remove_screen, function(target)
-    return type(target.id) == "string" and target.id:find("^modal:chain:redstone:remove:", 1, false) ~= nil
-  end)
-  assert(remove_target ~= nil, "attached redstone should expose a remove control")
-  editor.handle_click(state, remove_target.x, remove_target.y, remove_screen)
-  assert(chain_field.groups[1].conditions[1].redstone == nil, "redstone remove should clear the condition redstone binding")
+  state.modal.active_row = output_row_index
+  editor.handle_key_down(state, 0, 28)
+  local chooser_rows = editor.build_modal_rows(state.modal)
+  local saw_loader = false
+  for _, row in ipairs(chooser_rows) do
+    if row.kind == "choice_chooser" and row.option == "loader" then
+      saw_loader = true
+    end
+  end
+  assert(saw_loader == true, "redstone rule output should open chooser from destination station i/os")
 end
+
+assert(editor.group_label(1) == "A", "group_label should format 1 as A")
+assert(editor.group_label(26) == "Z", "group_label should format 26 as Z")
+assert(editor.group_label(27) == "AA", "group_label should format 27 as AA")
+assert(editor.group_label(52) == "AZ", "group_label should format 52 as AZ")
+assert(editor.group_label(53) == "BA", "group_label should format 53 as BA")
 
 do
   local repaired = editor.split_legacy_waypoint_string("[427,64,-148],[398,64,-210]")
@@ -710,7 +754,8 @@ do
   assert(save_text:find("Groups are OR.", 1, true) ~= nil, "save tab should explain OR semantics")
   assert(save_text:find("Click [+] to add a condition, then choose AND or OR before the next one.", 1, true) ~= nil, "save tab should explain the add-and-choose flow")
   assert(save_text:find("Comparator-based conditions open a comparator chooser before returning.", 1, true) ~= nil, "save tab should explain comparator chooser behavior")
-  assert(save_text:find("Redstone is attached per condition via the Redstone field.", 1, true) ~= nil, "save tab should explain per-condition redstone")
+  assert(save_text:find("Wait controls departure. Redstone rules are separate.", 1, true) ~= nil, "save tab should explain split wait/redstone logic")
+  assert(save_text:find("Redstone rule outputs come from the route destination station I/Os.", 1, true) ~= nil, "save tab should explain redstone rule outputs")
   assert(save_text:find("read-only here", 1, true) == nil, "save tab should no longer claim that redstone outputs are read-only")
   assert(save_text:find("uses redstone: loop entry 1 -> loader (while_pending)", 1, true) ~= nil, "save tab should summarize redstone-linked wait conditions")
 end

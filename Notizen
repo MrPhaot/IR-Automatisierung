@@ -68,3 +68,81 @@ Waypoints: [1] (irgendwelche Koordinaten)
            [+]
 + [condition] + AND + [condition]
                 OR
+
+
+Du setzt einen anderen aktiven, aber durch ein Fehler kaputten Chat fort. Unten sind die letzten relevanten Nachrichten sowie dein Starterprompt.
+---
+Du bist ein Experte in Lua und OpenComputers in der Minecraft-Version 1.7.10. Du kennst dich außerdem sehr gut mit Immersive Railroading sowie seinen Automatitierungsmöglichkeiten aus. Du setztst die Arbeit des anderen Agenten fort. Den aktuellen Stand des Projekt sowie seine Details bitte den Dokus entnehmen. Lies dafür zuerst AGENTS.md.  
+Der zuletzt implementierte Plan ist [PLAN23.md](immersive_railroading/docs/plans/factorio-schedule-v1/PLAN23.md) . Es gibt immer zwei Sessionen: In dieser planst du Features, Fixes, Architekturentscheidungen etc.; in der anderen implementiert ein anderer Agent mittels eines von dir erstellten Hand-Off-Plans (im Markdown-Format) das, was ich mit dir geplant habe. Als Referenz für den Standart der Ausführlichkeit liese die rezentesten Pläne, inklusive [PLAN23.md](immersive_railroading/docs/plans/factorio-schedule-v1/PLAN23.md) .
+---
+(Planung des aktuellen Bugfixes wurde hierdurch gestartet)
+[$caveman](/home/mrphaot/Dokumente/lua/minecraft/.agents/skills/caveman/SKILL.md) full. Ich habe das Programm in meiner Hauptwelt getestet. Dort bremst der Zug über die Station hinweg und fährt danach weiter. Dabei gibt es einen Punkt, an dem ein Waypoint (oder gar dieselbe Station) nicht als erreicht markiert wird und der Zug muss den Loop wieder fahren. Der Computer (Dateisystem) aus dieser Hauptwelt befindet unter: "~/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/HMMM/opencomputers/4e67b7ca-618d-4a67-8372-e46d2879544b". Der Log heißt "1oil1". Untersuche das Problem und Plane den Fix. Gehe so vor: 
+1. Analysiere das Problem und finde heraus, ob dieses Fehlverhalten isoliert und Code-weise klein ist oder größere Veränderungen in der Architektur und Logik erfordert.
+2. Gib mir eine Zusammenfassung deiner Funde verständlich (d.h., ich habe einzelne Dateien, wie train_controller oder einzelne Pläne, vor langer Zeit gelesen und ein großes Fehler ein Mal selbst hergeleitet, aber jetzt bin ich bisschen verrostet).
+3. Ich sage dir dann, wie du den Plan verfassen solltest. Davor liefrere mir **NUR die Zusammenfassung aus Schritt 2**.
+GOAL: Das Programm lässt den Zug konsistent an einer Station (hier: die Endstation der Route) stoppen und nur nach dem Erflüllen der Bedingung(en) weiterfahren.
+
+(Zusammenfassung der Funde)
+
+**Zusammenfassung**
+
+Fehler sitzt wahrscheinlich **nicht** in `station_dispatch`, Wait-Conditions, Redstone oder Editor. Schedule kommt nie bis `schedule_entry_arrived`/`schedule_wait_tick`. Problem liegt vorher in [train_controller.lua](/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/programs/train_controller.lua), genauer: Terminal-Leg Stop-Logik nach spätem Stop-Guidance-Capture.
+
+Welt-Code ist gleich Repo-Code: `diff -q` zwischen Repo-`train_controller.lua` und Hauptwelt-`train_controller.lua` zeigt keinen Unterschied.
+
+**Was Log zeigt**
+
+Log: [1oil1](</home/mrphaot/.local/share/PrismLauncher/instances/HBM NTM 2/minecraft/saves/HMMM/opencomputers/4e67b7ca-618d-4a67-8372-e46d2879544b/home/immersive_railroading/programs/1oil1:1>)
+
+Route:
+- `1_oil_1`, 7 Legs, `cruise_kmh=65`, `stop_buffer_m=6`, Profil `conservative`
+- Endstation: `2_oil_frack` bei `(658,68,-458)`
+- Terminal-Stop-Ziel wird ca. 6m vor Station berechnet: `(657.81,67.87,-452.00)`
+
+Ablauf:
+- Legs 1-6 werden normal per `within_handoff_distance` erreicht.
+- Leg 6 -> 7 passiert bei ca. `20.02m` Abstand zu Waypoint 6, aber noch mit `17.79m/s`.
+- Terminal-Leg startet bei `154.32m` Abstand zur Station.
+- Kurz vor Ziel: `distance=13.63m`, `speed=13.40m/s`, noch viel zu schnell.
+- Dann `stop_guidance_entry reason=late_buffer_capture_late`: physische Station nur noch `2.85m` weg, Stop-Ziel bereits `8.70m` überfahren.
+- Danach bremst Zug, aber markiert nie Arrival: `terminal_success_consistent=false` bleibt immer false.
+- Bei niedriger Geschwindigkeit gibt Controller wieder Vorwärts-Throttle `0.10`, obwohl `no_reverse_approach=true`.
+- Zug fährt danach große Schleife weg vom Ziel: Distanz wächst bis >1100m.
+- Log endet mit `aborted_by_user`; kein `route_complete`, kein `schedule_entry_arrived`, kein Wait.
+
+**Warum Station nicht als erreicht zählt**
+
+Arrival braucht aktuell zwei Dinge:
+- Stop-Ziel nah genug und langsam genug.
+- Physischer Abstand zur Station muss zum `stop_buffer_m=6` passen.
+
+Im Log ist beides nach Overshoot kaputt:
+- Stop-Ziel wurde schon deutlich überfahren.
+- Physischer Abstand ist `2.85m`, aber gewünschter Buffer ist `6m`; Fehler ca. `3.15m`, Toleranz im conservative-Profil nur `1.0m`.
+
+Damit bleibt `terminal_success_physical_ok=false`, also `terminal_success_consistent=false`, also keine Ankunft.
+
+**Wichtigster Code-Fehler**
+
+Nach `late_buffer_capture_late` geht Controller in `stop_first_active` / `no_reverse_approach`. Das soll offenbar erst stoppen, bevor er eventuell korrigiert.
+
+Aber: wenn Zug fast steht und `speed_toward_target` negativ wird, PID sieht Zielgeschwindigkeit `0.35m/s` und gibt wieder Vorwärtsleistung. Log zeigt ab Zeile 110: `mode=drive`, `throttle=0.03/0.10`, `brake=0.00`, während `no_reverse_approach=true` und `terminal_success_consistent=false`.
+
+Das ist kein Config-Problem. Controller hat Zustand “spät gefangen, noch nicht angekommen, keine Reverse-Korrektur”, aber Output erlaubt wieder Kriechen/Loop statt sicheren Hold oder definiertem Failure.
+
+**Scope-Einschätzung**
+
+Code-wise eher **lokal**, aber nicht One-Line:
+- Bereich: `train_controller.lua`, Terminal-Leg State Machine.
+- Betroffene Themen: `late_buffer_capture`, `stop_first_active`, `no_reverse_approach`, `terminal_success_*`, `terminal_failure`, Control-Ausgabe bei Ziel verfehlt.
+- Keine größere Architekturänderung nötig.
+- Fix muss aber vorsichtig sein, weil Terminal-Stop-Logik viele Schutzpfade hat und falscher Fix Reverse/Recovery/Pass-through kaputt machen kann.
+
+Kurz: Zug erkennt Endstation nicht, weil Stop-Guidance zu spät kommt, danach Arrival-Toleranz nie erfüllt wird, und Controller statt “sicher halten / kontrolliert fehlschlagen / gezielt korrigieren” wieder Vorwärtsfahrt erlaubt.
+
+(der nachfolgende Prompt; ihn musst du unmittelbar mit dem gesammelten Kontext ausführen, als wärst du der Agent aus der kaputten Session)
+Erstelle einen Plan:
+1. Lese zuerst noch einmal die Markdowns (Agents.md, dann nach deinem Ermessen die Dateien unter Docs) für den Kontext. Du brauchst nicht alle Pläne aus docs/plans.
+2. Orientiere dich an die neuesten Pläne unter factorio-schedule-v1 wie [PLAN23.md](immersive_railroading/docs/plans/factorio-schedule-v1/PLAN23.md) , um zu sehen, wie der Standard für Ausführlichkeit nach Situation aussieht. 
+2.1. Füge auf jeden Fall Akzeptanz-Kriterien und durchdachte, im Sandbox/mithilfe des Emulators getestete Codestücke (falls du es im Planungsmodus nicht schaffst, könntest du deinerseits das Verhalten des ganzen Systems aus dem Emulator und gar der .jar-Datei herleiten und deine Code-Vorschläge selber durch statische Analyse überprüfen).
+3. Iteriere solange, bis der Plan ausgereift ist und unbedingt meine Einschätzung braucht. Bis dahin arbeite ihn mit vorherigen Schritten heraus. Lasse nur dann Messages, wenn ich etwas Wichtiges über den Fortschritt wissen muss/es hat seit dem letzten Message lange Zeit gedauert; spare Tokens.

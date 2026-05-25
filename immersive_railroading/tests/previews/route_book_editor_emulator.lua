@@ -83,7 +83,6 @@ emulator.with_runtime({
               {
                 type = "time_passed",
                 seconds = 0,
-                redstone = {output = "loader", mode = "while_pending"},
               },
               {
                 type = "inactivity",
@@ -100,6 +99,21 @@ emulator.with_runtime({
             },
           },
         },
+        redstone = {
+          rules = {
+            {
+              output = "loader",
+              groups = {
+                {
+                  {
+                    type = "time_passed",
+                    seconds = 0,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
   }
@@ -112,8 +126,7 @@ emulator.with_runtime({
   assert(text:find("%[2%] inactivity 10s") ~= nil, "wait summary should render additional AND conditions in the same group")
   assert(text:find("cargo_percent >= 90", 1, true) ~= nil, "wait summary should render comparator-based conditions")
   assert(text:find("station_any_detector", 1, true) ~= nil, "wait summary should render wrapped comparator scopes")
-  assert(text:find("redstone io=loader", 1, true) ~= nil, "schedule wait panel should show redstone i/o id summaries")
-  assert(text:find("mode=while_pending", 1, true) ~= nil, "schedule wait panel should show redstone mode summaries")
+  assert(text:find("Rule A -> loader", 1, true) ~= nil, "schedule wait panel should show dedicated redstone rule summaries")
 end)
 
 emulator.with_runtime({
@@ -141,7 +154,7 @@ emulator.with_runtime({
   assert(text:find("Groups are OR.", 1, true) ~= nil, "save tab should explain group semantics")
   assert(text:find("Click [+] to add a condition, then choose AND or OR before the next one.", 1, true) ~= nil, "save tab should describe the chain builder flow")
   assert(text:find("Comparator%-based conditions open a comparator chooser before returning.") ~= nil, "save tab should describe comparator chooser behavior")
-  assert(text:find("Redstone is attached per condition via the Redstone field.", 1, true) ~= nil, "save tab should describe per-condition redstone")
+  assert(text:find("Wait controls departure. Redstone rules are separate.", 1, true) ~= nil, "save tab should describe split wait/redstone logic")
   assert(text:find("read%-only") == nil, "save tab should no longer claim outputs are read-only")
 end)
 

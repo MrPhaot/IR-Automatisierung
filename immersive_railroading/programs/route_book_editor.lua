@@ -301,6 +301,21 @@ local function make_choice_field(spec)
   }
 end
 
+local function make_section_field(label)
+  return {
+    kind = "section",
+    label = label,
+  }
+end
+
+local function make_note_field(label, lines)
+  return {
+    kind = "note",
+    label = label,
+    lines = lines or {},
+  }
+end
+
 local function make_repeatable_text_field(spec)
   local items = {}
   local values = spec.values or {}
@@ -428,10 +443,6 @@ local function make_chain_condition(condition)
     comparator = tostring(condition.comparator or ">="),
     value = tostring(condition.value or 0),
     scope = scope_to_editor_text(condition.scope),
-    redstone = type(condition.redstone) == "table" and {
-      output = tostring(condition.redstone.output or ""),
-      mode = tostring(condition.redstone.mode or "while_pending"),
-    } or nil,
   }
 end
 
@@ -439,12 +450,7 @@ local function make_condition_chain_field(schedule)
   local field = {
     kind = "condition_chain",
     key = "wait_chain",
-    label = "Wait Chain",
-    entry_route = make_text_field({
-      key = "route",
-      label = "First Route",
-      value = tostring(schedule and schedule.entries and schedule.entries[1] and schedule.entries[1].route or ""),
-    }),
+    label = "Wait Conditions",
     groups = {},
     selected_group_index = nil,
     selected_condition_index = nil,
@@ -466,6 +472,61 @@ local function make_condition_chain_field(schedule)
   if field.groups[1] and field.groups[1].conditions[1] then
     field.selected_group_index = 1
     field.selected_condition_index = 1
+  end
+  return field
+end
+
+local function make_redstone_rule(rule, book)
+  local field = {
+    kind = "logic_chain",
+    label = "Redstone Rule",
+    book = book,
+    groups = {},
+    selected_group_index = nil,
+    selected_condition_index = nil,
+    chooser = nil,
+    pending_insert = nil,
+    pending_condition = nil,
+    output = make_choice_field({
+      key = "output",
+      label = "Output",
+      value = tostring(rule and rule.output or ""),
+      options = {},
+    }),
+  }
+
+  for _, runtime_group in ipairs(rule and rule.groups or {}) do
+    local group = {conditions = {}}
+    for _, condition in ipairs(runtime_group or {}) do
+      group.conditions[#group.conditions + 1] = make_chain_condition(condition)
+    end
+    if #group.conditions > 0 then
+      field.groups[#field.groups + 1] = group
+    end
+  end
+  if field.groups[1] and field.groups[1].conditions[1] then
+    field.selected_group_index = 1
+    field.selected_condition_index = 1
+  end
+  return field
+end
+
+local function make_redstone_rules_field(schedule, book)
+  local field = {
+    kind = "redstone_rules",
+    key = "redstone_rules",
+    label = "Redstone Rules",
+    book = book,
+    rules = {},
+    selected_rule_index = nil,
+  }
+
+  local first_entry = schedule and schedule.entries and schedule.entries[1] or nil
+  for _, rule in ipairs(first_entry and first_entry.redstone and first_entry.redstone.rules or {}) do
+    field.rules[#field.rules + 1] = make_redstone_rule(rule, book)
+  end
+  if field.rules[1] then
+    field.selected_rule_index = 1
   end
   return field
 end
@@ -500,13 +561,6 @@ local function chain_condition_label(condition)
       tostring(condition.scope or "station_any_detector")
     )
   end
-  if type(condition.redstone) == "table" and trim(condition.redstone.output) ~= "" then
-    label = ("%s | io=%s %s"):format(
-      label,
-      tostring(condition.redstone.output or "?"),
-      tostring(condition.redstone.mode or "while_pending")
-    )
-  end
   return label
 end
 
@@ -514,10 +568,24 @@ local function chain_tokens_from_groups(groups)
   local tokens = {}
   groups = groups or {}
   if #groups == 0 then
-    tokens[#tokens + 1] = {kind = "plus", slot = "start", label = "[+]"}
+    tokens[#tokens + 1] = {
+      kind = "plus",
+      label = "[+]",
+      position = {
+        location = "start",
+      },
+    }
     return tokens
   end
-
+  tokens[#tokens + 1] = {
+    kind = "plus",
+    label = "[+]",
+    position = {
+      location = "start",
+      right_group_index = 1,
+      right_condition_index = 1,
+    },
+  }
   for group_index, group in ipairs(groups) do
     for condition_index, condition in ipairs(group.conditions or {}) do
       tokens[#tokens + 1] = {
@@ -525,13 +593,6 @@ local function chain_tokens_from_groups(groups)
         group_index = group_index,
         condition_index = condition_index,
         label = "[" .. chain_condition_label(condition) .. "]",
-      }
-      tokens[#tokens + 1] = {
-        kind = "plus",
-        slot = "after",
-        group_index = group_index,
-        condition_index = condition_index,
-        label = "[+]",
       }
       if group.conditions[condition_index + 1] then
         tokens[#tokens + 1] = {
@@ -541,6 +602,17 @@ local function chain_tokens_from_groups(groups)
           after_condition_index = condition_index,
           label = "[AND]",
         }
+        tokens[#tokens + 1] = {
+          kind = "plus",
+          label = "[+]",
+          position = {
+            location = "within_group",
+            left_group_index = group_index,
+            left_condition_index = condition_index,
+            right_group_index = group_index,
+            right_condition_index = condition_index + 1,
+          },
+        }
       elseif groups[group_index + 1] then
         tokens[#tokens + 1] = {
           kind = "operator",
@@ -548,9 +620,31 @@ local function chain_tokens_from_groups(groups)
           after_group_index = group_index,
           label = "[OR]",
         }
+        tokens[#tokens + 1] = {
+          kind = "plus",
+          label = "[+]",
+          position = {
+            location = "between_groups",
+            left_group_index = group_index,
+            left_condition_index = #group.conditions,
+            right_group_index = group_index + 1,
+            right_condition_index = 1,
+          },
+        }
       end
     end
   end
+
+  local last_group = groups[#groups]
+  tokens[#tokens + 1] = {
+    kind = "plus",
+    label = "[+]",
+    position = {
+      location = "end",
+      left_group_index = #groups,
+      left_condition_index = last_group and #last_group.conditions or nil,
+    },
+  }
 
   return tokens
 end
@@ -594,12 +688,6 @@ local function runtime_condition_from_editor(condition)
     out.value = tonumber(condition.value) or 0
     out.scope = scope_from_editor_text(condition.scope)
   end
-  if condition.redstone and trim(condition.redstone.output) ~= "" then
-    out.redstone = {
-      output = trim(condition.redstone.output),
-      mode = condition.redstone.mode or "while_pending",
-    }
-  end
   return out
 end
 
@@ -620,6 +708,20 @@ local function runtime_groups_from_chain(field)
     }
   end
   return groups
+end
+
+local function runtime_redstone_rules_from_editor(field)
+  local rules = {}
+  for _, rule in ipairs(field and field.rules or {}) do
+    local output = trim(rule.output and rule.output.value or "")
+    if output ~= "" then
+      rules[#rules + 1] = {
+        output = output,
+        groups = runtime_groups_from_chain(rule),
+      }
+    end
+  end
+  return rules
 end
 
 local function group_field_by_key(item, key)
@@ -794,6 +896,16 @@ local function inspect_redstone_runtime(book)
           end
         end
       end
+      for rule_index, rule in ipairs(entry.redstone and entry.redstone.rules or {}) do
+        condition_refs[#condition_refs + 1] = {
+          schedule = schedule_id,
+          entry = entry_index,
+          group = rule_index,
+          condition = 0,
+          output = tostring(rule.output or "?"),
+          mode = "rule",
+        }
+      end
     end
   end
 
@@ -865,6 +977,17 @@ local function rect(x, y, width, height, title)
     height = height,
     title = title,
   }
+end
+
+local function group_label(index)
+  local out = ""
+  index = tonumber(index) or 1
+  while index > 0 do
+    local rem = (index - 1) % 26
+    out = string.char(65 + rem) .. out
+    index = math.floor((index - 1) / 26)
+  end
+  return out
 end
 
 local function layout_for(width, height)
@@ -1118,6 +1241,32 @@ local function cycle_choice_value(field, step)
   return true
 end
 
+local find_modal_row_index
+
+local function open_choice_chooser(modal, field)
+  local options = field and field.options or {}
+  if #options == 0 then
+    return false
+  end
+  local selected = 1
+  for index, option in ipairs(options) do
+    if tostring(option) == tostring(field.value) then
+      selected = index
+      break
+    end
+  end
+  modal.choice_chooser = {
+    field = field,
+    title = tostring(field.label or "Choose Option"),
+    options = options,
+    selected = selected,
+  }
+  modal.active_row = find_modal_row_index(modal, function(row)
+    return row.kind == "choice_chooser" and row.option_index == selected
+  end) or modal.active_row
+  return true
+end
+
 local function group_item_field_visible_value(field, item_index, subfield, available, show_cursor, first_in_item)
   local head = first_in_item
     and ("%s [%d] %s: "):format(field.label, item_index, subfield.label)
@@ -1136,6 +1285,10 @@ local function selected_chain_condition(field)
   return group and group.conditions and group.conditions[field.selected_condition_index] or nil
 end
 
+local function selected_redstone_rule(field)
+  return field and field.rules and field.rules[field.selected_rule_index] or nil
+end
+
 local function first_condition_chain_field(modal)
   for _, field in ipairs(modal and modal.fields or {}) do
     if field.kind == "condition_chain" then
@@ -1143,6 +1296,76 @@ local function first_condition_chain_field(modal)
     end
   end
   return nil
+end
+
+local function first_redstone_rules_field(modal)
+  for _, field in ipairs(modal and modal.fields or {}) do
+    if field.kind == "redstone_rules" then
+      return field
+    end
+  end
+  return nil
+end
+
+local function schedule_route_field(modal)
+  for _, field in ipairs(modal and modal.fields or {}) do
+    if field.key == "route" then
+      return field
+    end
+  end
+  return nil
+end
+
+local function schedule_route_value(modal)
+  local field = schedule_route_field(modal)
+  return trim(field and field.value or "")
+end
+
+local function refresh_rule_output_options(modal, field)
+  local route_id = schedule_route_value(modal)
+  local options = available_redstone_ids_for_route_destination(field and field.book or nil, route_id)
+  local seen_current = false
+  for _, option in ipairs(options) do
+    if option == tostring(field.output.value or "") then
+      seen_current = true
+      break
+    end
+  end
+  if not seen_current and trim(field.output.value) ~= "" then
+    options[#options + 1] = tostring(field.output.value)
+  end
+  field.output.options = options
+end
+
+local function legacy_redstone_refs(entry)
+  local refs = {}
+  for group_index, group in ipairs(entry and entry.wait and entry.wait.groups or {}) do
+    for condition_index, condition in ipairs(group or {}) do
+      if type(condition.redstone) == "table" and trim(condition.redstone.output) ~= "" then
+        refs[#refs + 1] = ("Wait %s.%d -> %s (%s)"):format(
+          group_label(group_index),
+          condition_index,
+          tostring(condition.redstone.output),
+          tostring(condition.redstone.mode or "while_pending")
+        )
+      end
+    end
+  end
+  return refs
+end
+
+local function chain_summary_lines(groups)
+  local lines = {}
+  for group_index, group in ipairs(groups or {}) do
+    lines[#lines + 1] = ("Group %s"):format(group_label(group_index))
+    for condition_index, condition in ipairs(group.conditions or {}) do
+      lines[#lines + 1] = ("  [%d] %s"):format(condition_index, chain_condition_label(condition))
+    end
+  end
+  if #lines == 0 then
+    lines[1] = "No conditions."
+  end
+  return lines
 end
 
 local function build_chain_chooser_rows(field_index, field)
@@ -1158,23 +1381,9 @@ local function build_chain_chooser_rows(field_index, field)
       condition_type = "Choose Condition",
       existing_condition_type = "Choose Condition",
       comparator = "Choose Comparator",
-      redstone_output = "Choose Redstone I/O",
-      redstone_mode = "Choose Redstone Mode",
       scope = "Choose Scope",
     })[chooser.kind] or "Choose Option",
   }
-  if chooser.kind == "redstone_output" and #(chooser.options or {}) == 0 then
-    rows[#rows + 1] = {
-      kind = "chain_chooser",
-      field_index = field_index,
-      field = field,
-      chooser = chooser,
-      option_index = 0,
-      option = "No destination-station Redstone I/Os available.",
-      disabled = true,
-    }
-    return rows
-  end
   for option_index, option in ipairs(chooser.options or {}) do
     rows[#rows + 1] = {
       kind = "chain_chooser",
@@ -1191,7 +1400,20 @@ end
 local function build_modal_rows(modal)
   local rows = {}
   for field_index, field in ipairs(modal.fields or {}) do
-    if field.kind == "repeatable_text" then
+    if field.kind == "section" then
+      rows[#rows + 1] = field
+    elseif field.kind == "note" then
+      rows[#rows + 1] = {
+        kind = "section",
+        label = field.label,
+      }
+      for _, line in ipairs(field.lines or {}) do
+        rows[#rows + 1] = {
+          kind = "note_line",
+          text = line,
+        }
+      end
+    elseif field.kind == "repeatable_text" then
       for item_index, item in ipairs(field.items or {}) do
         rows[#rows + 1] = {
           kind = "repeat_item",
@@ -1226,20 +1448,6 @@ local function build_modal_rows(modal)
         field = field,
       }
     elseif field.kind == "condition_chain" then
-      rows[#rows + 1] = {
-        kind = "section",
-        label = "Schedule Route",
-      }
-      rows[#rows + 1] = {
-        kind = "chain_route",
-        field_index = field_index,
-        field = field,
-        route_field = field.entry_route,
-      }
-      rows[#rows + 1] = {
-        kind = "section",
-        label = "Wait Chain",
-      }
       local token_lines = chain_token_lines(field, modal.chain_wrap_width or 48)
       for line_index, line in ipairs(token_lines) do
         rows[#rows + 1] = {
@@ -1255,7 +1463,7 @@ local function build_modal_rows(modal)
       if selected then
         rows[#rows + 1] = {
           kind = "section",
-          label = "Selected Condition",
+          label = "Selected Wait Condition",
         }
         rows[#rows + 1] = {
           kind = "chain_condition_detail",
@@ -1292,28 +1500,102 @@ local function build_modal_rows(modal)
             detail = "scope",
           }
         end
-        rows[#rows + 1] = {
-          kind = "section",
-          label = "Redstone I/O",
-        }
-        rows[#rows + 1] = {
-          kind = "chain_condition_detail",
-          field_index = field_index,
-          field = field,
-          detail = "redstone_output",
-        }
-        if type(selected.redstone) == "table" and trim(selected.redstone.output) ~= "" then
-          rows[#rows + 1] = {
-            kind = "chain_condition_detail",
-            field_index = field_index,
-            field = field,
-            detail = "redstone_mode",
-          }
-        end
       end
 
       for _, chooser_row in ipairs(build_chain_chooser_rows(field_index, field)) do
         rows[#rows + 1] = chooser_row
+      end
+    elseif field.kind == "redstone_rules" then
+      rows[#rows + 1] = {
+        kind = "redstone_rule_add",
+        field_index = field_index,
+        field = field,
+      }
+      for rule_index, rule in ipairs(field.rules or {}) do
+        refresh_rule_output_options(modal, rule)
+        rows[#rows + 1] = {
+          kind = "redstone_rule_summary",
+          field_index = field_index,
+          field = field,
+          rule_index = rule_index,
+          rule = rule,
+        }
+        for _, line in ipairs(chain_summary_lines(rule.groups)) do
+          rows[#rows + 1] = {
+            kind = "redstone_rule_summary_line",
+            field_index = field_index,
+            field = field,
+            rule_index = rule_index,
+            text = line,
+          }
+        end
+      end
+      local rule = selected_redstone_rule(field)
+      if rule then
+        rows[#rows + 1] = {
+          kind = "section",
+          label = "Selected Redstone Rule",
+        }
+        rows[#rows + 1] = {
+          kind = "redstone_rule_output",
+          field_index = field_index,
+          field = field,
+          rule_index = field.selected_rule_index,
+          rule = rule,
+        }
+        local token_lines = chain_token_lines(rule, modal.chain_wrap_width or 48)
+        for line_index, line in ipairs(token_lines) do
+          rows[#rows + 1] = {
+            kind = "chain_tokens",
+            field_index = field_index,
+            field = rule,
+            line_index = line_index,
+            line = line,
+          }
+        end
+        local selected = selected_chain_condition(rule)
+        if selected then
+          rows[#rows + 1] = {
+            kind = "section",
+            label = "Selected Redstone Condition",
+          }
+          rows[#rows + 1] = {
+            kind = "chain_condition_detail",
+            field_index = field_index,
+            field = rule,
+            detail = "type",
+          }
+          if selected.type == "time_passed" or selected.type == "inactivity" then
+            rows[#rows + 1] = {
+              kind = "chain_condition_detail",
+              field_index = field_index,
+              field = rule,
+              detail = "seconds",
+            }
+          else
+            rows[#rows + 1] = {
+              kind = "chain_condition_detail",
+              field_index = field_index,
+              field = rule,
+              detail = "comparator",
+            }
+            rows[#rows + 1] = {
+              kind = "chain_condition_detail",
+              field_index = field_index,
+              field = rule,
+              detail = "value",
+            }
+            rows[#rows + 1] = {
+              kind = "chain_condition_detail",
+              field_index = field_index,
+              field = rule,
+              detail = "scope",
+            }
+          end
+        end
+        for _, chooser_row in ipairs(build_chain_chooser_rows(field_index, rule)) do
+          rows[#rows + 1] = chooser_row
+        end
       end
     elseif field.kind == "choice" then
       rows[#rows + 1] = {
@@ -1328,6 +1610,14 @@ local function build_modal_rows(modal)
         field = field,
       }
     end
+  end
+  for option_index, option in ipairs(modal.choice_chooser and modal.choice_chooser.options or {}) do
+    rows[#rows + 1] = {
+      kind = "choice_chooser",
+      chooser = modal.choice_chooser,
+      option_index = option_index,
+      option = option,
+    }
   end
   return rows
 end
@@ -1353,9 +1643,6 @@ local function current_modal_text_cell(state)
   end
   if row.kind == "group_item_field" and row.subfield.kind ~= "choice" then
     return row.subfield
-  end
-  if row.kind == "chain_route" then
-    return row.route_field
   end
   return nil
 end
@@ -1412,7 +1699,7 @@ local function insert_repeatable_item(modal, field_index, item_index)
   return nil
 end
 
-local function find_modal_row_index(modal, predicate)
+find_modal_row_index = function(modal, predicate)
   local rows = build_modal_rows(modal)
   for row_index, row in ipairs(rows) do
     if predicate(row) then
@@ -1446,7 +1733,9 @@ end
 local function collect_modal_values(modal)
   local values = {}
   for _, field in ipairs(modal.fields or {}) do
-    if field.kind == "repeatable_text" then
+    if field.kind == "section" or field.kind == "note" then
+      -- structural only
+    elseif field.kind == "repeatable_text" then
       local items = {}
       for _, item in ipairs(field.items or {}) do
         items[#items + 1] = item.value
@@ -1464,9 +1753,10 @@ local function collect_modal_values(modal)
       values[field.key] = items
     elseif field.kind == "condition_chain" then
       values[field.key] = {
-        route = trim(field.entry_route.value),
         groups = runtime_groups_from_chain(field),
       }
+    elseif field.kind == "redstone_rules" then
+      values[field.key] = runtime_redstone_rules_from_editor(field)
     else
       values[field.key] = field.value
     end
@@ -1477,7 +1767,7 @@ end
 local function next_editable_modal_row(modal, start_index)
   local rows = build_modal_rows(modal)
   for index = start_index or 1, #rows do
-    if rows[index].kind ~= "repeat_add" and rows[index].kind ~= "group_add" and rows[index].kind ~= "section" then
+    if rows[index].kind ~= "repeat_add" and rows[index].kind ~= "group_add" and rows[index].kind ~= "section" and rows[index].kind ~= "note_line" then
       return index
     end
   end
@@ -1493,10 +1783,11 @@ local function set_chain_detail_scroll(condition, detail, scroll_x)
 end
 
 local function insert_chain_condition(field, condition)
-  local pending = field.pending_insert
+  local pending = field.pending_insert and field.pending_insert.position or nil
+  local operator = field.pending_insert and field.pending_insert.operator or "AND"
   local new_condition = make_chain_condition(condition)
 
-  if not pending or pending.slot == "start" or #(field.groups or {}) == 0 then
+  if not pending or #(field.groups or {}) == 0 then
     field.groups = {
       {conditions = {new_condition}},
     }
@@ -1508,22 +1799,70 @@ local function insert_chain_condition(field, condition)
     return new_condition
   end
 
-  if pending.operator == "AND" then
-    local group = field.groups[pending.group_index]
-    if group then
-      local insert_at = math.min((pending.condition_index or #group.conditions) + 1, #group.conditions + 1)
-      table.insert(group.conditions, insert_at, new_condition)
-      field.selected_group_index = pending.group_index
-      field.selected_condition_index = insert_at
+  if pending.location == "start" then
+    if operator == "AND" and field.groups[1] then
+      table.insert(field.groups[1].conditions, 1, new_condition)
+      field.selected_group_index = 1
+      field.selected_condition_index = 1
+    else
+      table.insert(field.groups, 1, {conditions = {new_condition}})
+      field.selected_group_index = 1
+      field.selected_condition_index = 1
     end
-  else
-    local insert_group = {
-      conditions = {new_condition},
-    }
-    local group_index = math.min((pending.group_index or #field.groups) + 1, #field.groups + 1)
-    table.insert(field.groups, group_index, insert_group)
-    field.selected_group_index = group_index
-    field.selected_condition_index = 1
+  elseif pending.location == "within_group" then
+    local group = field.groups[pending.left_group_index]
+    local insert_at = pending.right_condition_index or ((pending.left_condition_index or 0) + 1)
+    if group and operator == "AND" then
+      table.insert(group.conditions, insert_at, new_condition)
+      field.selected_group_index = pending.left_group_index
+      field.selected_condition_index = insert_at
+    elseif group then
+      local left = {}
+      local right = {}
+      for index, existing in ipairs(group.conditions or {}) do
+        if index < insert_at then
+          left[#left + 1] = existing
+        else
+          right[#right + 1] = existing
+        end
+      end
+      group.conditions = left
+      local insert_group_index = pending.left_group_index + 1
+      table.insert(field.groups, insert_group_index, {conditions = {new_condition}})
+      if #right > 0 then
+        table.insert(field.groups, insert_group_index + 1, {conditions = right})
+      end
+      field.selected_group_index = insert_group_index
+      field.selected_condition_index = 1
+    end
+  elseif pending.location == "between_groups" then
+    if operator == "AND" then
+      local left_group = field.groups[pending.left_group_index]
+      if left_group then
+        left_group.conditions[#left_group.conditions + 1] = new_condition
+        field.selected_group_index = pending.left_group_index
+        field.selected_condition_index = #left_group.conditions
+      end
+    else
+      local insert_group_index = pending.right_group_index or (#field.groups + 1)
+      table.insert(field.groups, insert_group_index, {conditions = {new_condition}})
+      field.selected_group_index = insert_group_index
+      field.selected_condition_index = 1
+    end
+  elseif pending.location == "end" then
+    if operator == "AND" then
+      local last_group_index = pending.left_group_index or #field.groups
+      local group = field.groups[last_group_index]
+      if group then
+        group.conditions[#group.conditions + 1] = new_condition
+        field.selected_group_index = last_group_index
+        field.selected_condition_index = #group.conditions
+      end
+    else
+      field.groups[#field.groups + 1] = {conditions = {new_condition}}
+      field.selected_group_index = #field.groups
+      field.selected_condition_index = 1
+    end
   end
 
   field.pending_insert = nil
@@ -1594,7 +1933,8 @@ local function begin_scope_chooser(state, field)
   if not condition then
     return false
   end
-  local options = available_scope_options_for_route_destination(state.book, field.entry_route.value, condition.scope)
+  local route_id = schedule_route_value(state.modal)
+  local options = available_scope_options_for_route_destination(state.book, route_id, condition.scope)
   local selected = 1
   for index, option in ipairs(options) do
     if option == tostring(condition.scope or "station_any_detector") then
@@ -1638,8 +1978,7 @@ local function choose_chain_option(state, row)
   if chooser.kind == "operator" then
     field.pending_insert = {
       operator = option,
-      group_index = chooser.anchor.group_index,
-      condition_index = chooser.anchor.condition_index,
+      position = chooser.anchor.position,
     }
     begin_condition_type_chooser(field, chooser.anchor)
     return true
@@ -1648,9 +1987,6 @@ local function choose_chain_option(state, row)
   if chooser.kind == "condition_type" then
     local is_metric = option == "passengers" or option == "cargo_percent" or option == "fluid_percent"
     local pending = make_chain_condition({type = option})
-    if chooser.anchor and chooser.anchor.slot == "start" then
-      field.pending_insert = {slot = "start"}
-    end
     if is_metric then
       field.pending_condition = pending
       field.chooser = {
@@ -1717,36 +2053,6 @@ local function choose_chain_option(state, row)
     return true
   end
 
-  if chooser.kind == "redstone_output" then
-    local condition = field.groups[chooser.condition_ref.group_index].conditions[chooser.condition_ref.condition_index]
-    if not condition then
-      return false
-    end
-    condition.redstone = {
-      output = tostring(option or ""),
-      mode = "while_pending",
-    }
-    field.chooser = {
-      kind = "redstone_mode",
-      condition_ref = chooser.condition_ref,
-      options = SCHEDULE_REDSTONE_MODES,
-      selected = 1,
-    }
-    field.selected_group_index = chooser.condition_ref.group_index
-    field.selected_condition_index = chooser.condition_ref.condition_index
-    return true
-  end
-
-  if chooser.kind == "redstone_mode" then
-    local condition = field.groups[chooser.condition_ref.group_index].conditions[chooser.condition_ref.condition_index]
-    if not condition or type(condition.redstone) ~= "table" then
-      return false
-    end
-    condition.redstone.mode = tostring(option or "while_pending")
-    field.chooser = nil
-    return true
-  end
-
   return false
 end
 
@@ -1776,11 +2082,14 @@ local function render_chain_tokens(buffer, targets, x, y, width, field, line_ind
       modal_chain_line = line_index,
     }
     if token.kind == "condition" then
-      target.id = ("modal:chain:condition:%d:%d"):format(token.group_index, token.condition_index)
-    elseif token.kind == "plus" and token.slot == "start" then
-      target.id = "modal:chain:start"
+      target.id = "modal:chain:condition"
+      target.modal_chain_field = field
+      target.group_index = token.group_index
+      target.condition_index = token.condition_index
     elseif token.kind == "plus" then
-      target.id = ("modal:chain:add:%d:%d"):format(token.group_index, token.condition_index)
+      target.id = "modal:chain:plus"
+      target.modal_chain_field = field
+      target.modal_chain_position = token.position
     end
     if is_valid_target(target) then
       targets[#targets + 1] = target
@@ -1826,17 +2135,6 @@ local function chain_detail_visible_value(row, available, show_cursor)
   if row.detail == "scope" then
     return ("Scope: [%s]"):format(tostring(condition.scope or "station_any_detector"))
   end
-  if row.detail == "redstone_output" then
-    if type(condition.redstone) == "table" and trim(condition.redstone.output) ~= "" then
-      return ("Redstone I/O ID: [%s] [x]"):format(tostring(condition.redstone.output or ""))
-    end
-    return "Redstone I/O ID: [+]"
-  end
-  if row.detail == "redstone_mode" then
-    return ("Redstone Mode: [%s]"):format(
-      tostring(condition.redstone and condition.redstone.mode or "while_pending")
-    )
-  end
   return ""
 end
 
@@ -1865,6 +2163,8 @@ local function render_modal(buffer, targets, layout, modal)
       local is_active = row_index == modal.active_row
       if row.kind == "section" then
         render_text(buffer, x + 2, row_y, ("-- %s --"):format(tostring(row.label or "")), width - 4)
+      elseif row.kind == "note_line" then
+        render_text(buffer, x + 2, row_y, prefix .. tostring(row.text or ""), width - 4)
       elseif row.kind == "text" then
         render_text(buffer, x + 2, row_y, prefix .. modal_field_visible_value(row.field, width - 4, is_active), width - 4)
       elseif row.kind == "choice" then
@@ -1928,39 +2228,64 @@ local function render_modal(buffer, targets, layout, modal)
         if is_valid_target(add_target) then
           targets[#targets + 1] = add_target
         end
-      elseif row.kind == "chain_route" then
-        render_text(buffer, x + 2, row_y, prefix .. modal_field_visible_value(row.route_field, width - 4, is_active), width - 4)
+      elseif row.kind == "redstone_rule_add" then
+        render_text(buffer, x + 2, row_y, prefix .. "[+ Rule]", width - 4)
+        local add_target = {
+          id = ("modal:redstone_rule:add:%d"):format(row.field_index),
+          x = x + 1,
+          y = row_y,
+          width = width - 2,
+          height = 1,
+        }
+        if is_valid_target(add_target) then
+          targets[#targets + 1] = add_target
+        end
+      elseif row.kind == "redstone_rule_summary" then
+        local output = trim(row.rule.output.value)
+        render_text(buffer, x + 2, row_y, prefix .. ("Rule [%d] Output: [%s]"):format(row.rule_index, output ~= "" and output or ""), width - 8)
+        local rule_target = {
+          id = ("modal:redstone_rule:select:%d:%d"):format(row.field_index, row.rule_index),
+          x = x + 1,
+          y = row_y,
+          width = width - 2,
+          height = 1,
+        }
+        local remove_target = {
+          id = ("modal:redstone_rule:remove:%d:%d"):format(row.field_index, row.rule_index),
+          x = x + width - 6,
+          y = row_y,
+          width = 3,
+          height = 1,
+        }
+        if is_valid_target(rule_target) then
+          targets[#targets + 1] = rule_target
+        end
+        if is_valid_target(remove_target) then
+          render_text(buffer, x + width - 6, row_y, "[x]", 3)
+          targets[#targets + 1] = remove_target
+        end
+      elseif row.kind == "redstone_rule_summary_line" then
+        render_text(buffer, x + 4, row_y, prefix .. tostring(row.text or ""), width - 6)
+        local rule_target = {
+          id = ("modal:redstone_rule:select:%d:%d"):format(row.field_index, row.rule_index),
+          x = x + 1,
+          y = row_y,
+          width = width - 2,
+          height = 1,
+        }
+        if is_valid_target(rule_target) then
+          targets[#targets + 1] = rule_target
+        end
+      elseif row.kind == "redstone_rule_output" then
+        local text = ("Output: [%s]"):format(tostring(row.rule.output.value or ""))
+        if #(row.rule.output.options or {}) == 0 then
+          text = "Output: [No destination-station Redstone I/Os available.]"
+        end
+        render_text(buffer, x + 2, row_y, prefix .. text, width - 4)
       elseif row.kind == "chain_tokens" then
         render_chain_tokens(buffer, targets, x + 1, row_y, width - 3, row.field, row.line_index, is_active)
       elseif row.kind == "chain_condition_detail" then
         render_text(buffer, x + 2, row_y, prefix .. chain_detail_visible_value(row, width - 6, is_active), width - 6)
-        if row.detail == "redstone_output" then
-          local condition = selected_chain_condition(row.field)
-          if type(condition and condition.redstone) == "table" and trim(condition.redstone.output) ~= "" then
-            local remove_x = x + width - 6
-            local remove_target = {
-              id = ("modal:chain:redstone:remove:%d:%d"):format(row.field.selected_group_index or 0, row.field.selected_condition_index or 0),
-              x = remove_x,
-              y = row_y,
-              width = 3,
-              height = 1,
-            }
-            if is_valid_target(remove_target) then
-              targets[#targets + 1] = remove_target
-            end
-          else
-            local add_target = {
-              id = ("modal:chain:redstone:add:%d:%d"):format(row.field.selected_group_index or 0, row.field.selected_condition_index or 0),
-              x = x + 20,
-              y = row_y,
-              width = 3,
-              height = 1,
-            }
-            if is_valid_target(add_target) then
-              targets[#targets + 1] = add_target
-            end
-          end
-        end
       elseif row.kind == "chain_chooser" then
         local marker = row.disabled and " - " or ((row.option_index or 0) == (row.chooser.selected or 0) and "[x]" or "[ ]")
         render_text(buffer, x + 2, row_y, prefix .. marker .. " " .. tostring(row.option or ""), width - 4)
@@ -1971,10 +2296,24 @@ local function render_modal(buffer, targets, layout, modal)
             y = row_y,
             width = width - 2,
             height = 1,
+            modal_chain_field = row.field,
           }
           if is_valid_target(chooser_target) then
             targets[#targets + 1] = chooser_target
           end
+        end
+      elseif row.kind == "choice_chooser" then
+        local marker = ((row.option_index or 0) == (row.chooser.selected or 0)) and "[x]" or "[ ]"
+        render_text(buffer, x + 2, row_y, prefix .. marker .. " " .. tostring(row.option or ""), width - 4)
+        local chooser_target = {
+          id = ("modal:choice:chooser:%d"):format(row.option_index or 0),
+          x = x + 1,
+          y = row_y,
+          width = width - 2,
+          height = 1,
+        }
+        if is_valid_target(chooser_target) then
+          targets[#targets + 1] = chooser_target
         end
       end
 
@@ -2281,8 +2620,13 @@ local function open_action_modal(state, action)
         title = "Add Schedule",
         fields = {
           make_text_field({key = "id", label = "Schedule ID"}),
+          make_section_field("Schedule Settings"),
+          make_text_field({key = "route", label = "Route"}),
           make_choice_field({key = "cyclic", label = "Cyclic", value = "false", options = BOOLEAN_OPTIONS}),
+          make_section_field("Wait Conditions"),
           make_condition_chain_field(nil),
+          make_section_field("Redstone Rules"),
+          make_redstone_rules_field(nil, state.book),
         },
         on_submit = function(current_state, values)
           if values.id == "" then
@@ -2290,11 +2634,14 @@ local function open_action_modal(state, action)
           end
           current_state.book.SCHEDULES[values.id] = {
             cyclic = values.cyclic == "true",
-            entries = values.wait_chain and trim(values.wait_chain.route) ~= "" and {
+            entries = trim(values.route) ~= "" and {
               {
-                route = values.wait_chain.route,
+                route = values.route,
                 wait = {
                   groups = values.wait_chain.groups,
+                },
+                redstone = {
+                  rules = values.redstone_rules or {},
                 },
               },
             } or {},
@@ -2309,19 +2656,37 @@ local function open_action_modal(state, action)
     local id = current_schedule_id(state)
     local schedule = id and state.book.SCHEDULES[id]
     if action == "edit" and schedule then
+      local first_entry = schedule.entries and schedule.entries[1] or nil
+      local legacy_refs = legacy_redstone_refs(first_entry)
+      local edit_fields = {
+        make_section_field("Schedule Settings"),
+        make_text_field({key = "route", label = "Route", value = tostring(first_entry and first_entry.route or "")}),
+        make_choice_field({key = "cyclic", label = "Cyclic", value = tostring(schedule.cyclic == true), options = BOOLEAN_OPTIONS}),
+      }
+      if #legacy_refs > 0 then
+        edit_fields[#edit_fields + 1] = make_note_field("Legacy Redstone Warning", {
+          "Legacy per-condition redstone detected.",
+          "Editor writes only entry.redstone.rules on save.",
+          table.concat(legacy_refs, "; "),
+        })
+      end
+      edit_fields[#edit_fields + 1] = make_section_field("Wait Conditions")
+      edit_fields[#edit_fields + 1] = make_condition_chain_field(schedule)
+      edit_fields[#edit_fields + 1] = make_section_field("Redstone Rules")
+      edit_fields[#edit_fields + 1] = make_redstone_rules_field(schedule, state.book)
       open_modal(state, {
         title = "Edit Schedule",
-        fields = {
-          make_choice_field({key = "cyclic", label = "Cyclic", value = tostring(schedule.cyclic == true), options = BOOLEAN_OPTIONS}),
-          make_condition_chain_field(schedule),
-        },
+        fields = edit_fields,
         on_submit = function(current_state, values)
           schedule.cyclic = values.cyclic == "true"
-          if values.wait_chain and trim(values.wait_chain.route) ~= "" then
+          if trim(values.route) ~= "" then
             schedule.entries[1] = {
-              route = values.wait_chain.route,
+              route = values.route,
               wait = {
                 groups = values.wait_chain.groups,
+              },
+              redstone = {
+                rules = values.redstone_rules or {},
               },
             }
           end
@@ -2368,15 +2733,17 @@ local function build_screen(state, width, height)
   local layout = layout_for(width, height)
   local buffer = {}
   local targets = {}
+  local modal_targets = {}
 
   if layout.tier == "minimum" then
     render_minimum_screen(buffer, layout)
     if state.modal then
-      render_modal(buffer, targets, layout, state.modal)
+      render_modal(buffer, modal_targets, layout, state.modal)
     end
     return {
       buffer = buffer,
       targets = targets,
+      modal_targets = modal_targets,
       layout = layout,
     }
   end
@@ -2477,10 +2844,10 @@ local function build_screen(state, width, height)
       end
       render_wrapped_lines(buffer, layout.schedule_entries.x + 2, layout.schedule_entries.y + 2, layout.schedule_entries.width - 4, math.max(layout.schedule_entries.height - 3, 0), entry_lines, state.panel_scrolls.schedule_entries)
       local first_entry = schedule.entries and schedule.entries[1]
-      if first_entry and first_entry.wait then
+      if first_entry then
         local wait_lines = {}
-        for group_index, group in ipairs(first_entry.wait.groups or {}) do
-          wait_lines[#wait_lines + 1] = ("Group %s"):format(string.char(64 + group_index))
+        for group_index, group in ipairs(first_entry.wait and first_entry.wait.groups or {}) do
+          wait_lines[#wait_lines + 1] = ("Group %s"):format(group_label(group_index))
           for condition_index, condition in ipairs(group or {}) do
             if condition.type == "time_passed" or condition.type == "inactivity" then
               wait_lines[#wait_lines + 1] = ("  [%d] %s %ss"):format(
@@ -2497,11 +2864,24 @@ local function build_screen(state, width, height)
                 scope_to_editor_text(condition.scope)
               )
             end
-            if type(condition.redstone) == "table" then
-              wait_lines[#wait_lines + 1] = ("    redstone io=%s mode=%s"):format(
-                tostring(condition.redstone.output or "?"),
-                tostring(condition.redstone.mode or "?")
-              )
+          end
+        end
+        for rule_index, rule in ipairs(first_entry.redstone and first_entry.redstone.rules or {}) do
+          wait_lines[#wait_lines + 1] = ("Rule %s -> %s"):format(group_label(rule_index), tostring(rule.output or "?"))
+          for group_index, group in ipairs(rule.groups or {}) do
+            wait_lines[#wait_lines + 1] = ("  Group %s"):format(group_label(group_index))
+            for condition_index, condition in ipairs(group or {}) do
+              if condition.type == "time_passed" or condition.type == "inactivity" then
+                wait_lines[#wait_lines + 1] = ("    [%d] %s %ss"):format(condition_index, tostring(condition.type or "?"), tostring(condition.seconds or 0))
+              else
+                wait_lines[#wait_lines + 1] = ("    [%d] %s %s %s %s"):format(
+                  condition_index,
+                  tostring(condition.type or "?"),
+                  tostring(condition.comparator or ">="),
+                  tostring(condition.value or 0),
+                  scope_to_editor_text(condition.scope)
+                )
+              end
             end
           end
         end
@@ -2535,7 +2915,8 @@ local function build_screen(state, width, height)
     save_lines[#save_lines + 1] = "Groups are OR."
     save_lines[#save_lines + 1] = "Click [+] to add a condition, then choose AND or OR before the next one."
     save_lines[#save_lines + 1] = "Comparator-based conditions open a comparator chooser before returning."
-    save_lines[#save_lines + 1] = "Redstone is attached per condition via the Redstone field."
+    save_lines[#save_lines + 1] = "Wait controls departure. Redstone rules are separate."
+    save_lines[#save_lines + 1] = "Redstone rule outputs come from the route destination station I/Os."
     for index = 1, math.min(#runtime_info.condition_refs, 3) do
       local item = runtime_info.condition_refs[index]
       save_lines[#save_lines + 1] = ("uses redstone: %s entry %d -> %s (%s)"):format(
@@ -2555,167 +2936,106 @@ local function build_screen(state, width, height)
   render_text(buffer, 3, layout.status_y, state.message or "", math.max(width - 4, 1))
 
   if state.modal then
-    render_modal(buffer, targets, layout, state.modal)
+    render_modal(buffer, modal_targets, layout, state.modal)
   end
 
   return {
     buffer = buffer,
     targets = targets,
+    modal_targets = modal_targets,
     layout = layout,
   }
 end
 
 local function handle_click(state, x, y, screen)
-  if type(x) ~= "number" or type(y) ~= "number" or type(screen) ~= "table" or type(screen.targets) ~= "table" then
+  if type(x) ~= "number" or type(y) ~= "number" or type(screen) ~= "table" then
     return false
   end
 
-  for _, target in ipairs(screen.targets) do
+  local active_targets = state.modal and screen.modal_targets or screen.targets
+  if type(active_targets) ~= "table" then
+    return false
+  end
+
+  local fallback_row_target = nil
+  for index = #active_targets, 1, -1 do
+    local target = active_targets[index]
     if term_ui.hit(target, x, y) then
       if state.modal then
-        if target.modal_row_index then
-          state.modal.active_row = target.modal_row_index
-          local clicked_row = build_modal_rows(state.modal)[target.modal_row_index]
-          if clicked_row and clicked_row.kind == "choice" then
-            return cycle_choice_value(clicked_row.field, 1)
-          end
-          if clicked_row and clicked_row.kind == "group_item_field" and clicked_row.subfield.kind == "choice" then
-            return cycle_choice_value(clicked_row.subfield, 1)
-          end
-          if clicked_row and clicked_row.kind == "chain_condition_detail" then
-            if clicked_row.detail == "type" then
-              return begin_existing_condition_type_chooser(clicked_row.field)
-            end
-            if clicked_row.detail == "comparator" then
-              return begin_existing_comparator_chooser(clicked_row.field)
-            end
-            if clicked_row.detail == "scope" then
-              return begin_scope_chooser(state, clicked_row.field)
-            end
-            if clicked_row.detail == "redstone_output" then
-              clicked_row.field.chooser = {
-                kind = "redstone_output",
-                condition_ref = {
-                  group_index = clicked_row.field.selected_group_index,
-                  condition_index = clicked_row.field.selected_condition_index,
-                },
-                options = available_redstone_ids_for_route_destination(state.book, clicked_row.field.entry_route.value),
-                selected = 1,
-              }
-              local condition = selected_chain_condition(clicked_row.field)
-              local current_output = condition and condition.redstone and condition.redstone.output or nil
-              for index, option in ipairs(clicked_row.field.chooser.options or {}) do
-                if option == current_output then
-                  clicked_row.field.chooser.selected = index
-                  break
-                end
-              end
-              return true
-            end
-            if clicked_row.detail == "redstone_mode" then
-              local condition = selected_chain_condition(clicked_row.field)
-              if condition and type(condition.redstone) == "table" then
-                clicked_row.field.chooser = {
-                  kind = "redstone_mode",
-                  condition_ref = {
-                    group_index = clicked_row.field.selected_group_index,
-                    condition_index = clicked_row.field.selected_condition_index,
-                  },
-                  options = SCHEDULE_REDSTONE_MODES,
-                  selected = 1,
-                }
-                for index, option in ipairs(SCHEDULE_REDSTONE_MODES) do
-                  if option == condition.redstone.mode then
-                    clicked_row.field.chooser.selected = index
-                    break
-                  end
-                end
-                return true
-              end
-            end
-          end
+        if type(target.id) == "string" and target.id:match("^modal:row:") then
+          fallback_row_target = target
+          goto continue
+        end
+        if target.id == "modal:chain:plus" and target.modal_chain_field then
+          local field = target.modal_chain_field
+          field.chooser = {
+            kind = "operator",
+            anchor = {
+              position = target.modal_chain_position,
+            },
+            options = {"AND", "OR"},
+            selected = 1,
+          }
           return true
         end
-        if target.id == "modal:chain:start" then
-          local field = first_condition_chain_field(state.modal)
-          if field and field.kind == "condition_chain" then
-            field.pending_insert = {slot = "start"}
-            begin_condition_type_chooser(field, {slot = "start"})
-            return true
-          end
-        end
-        if target.id and target.id:match("^modal:chain:add:") then
-          local group_index, condition_index = target.id:match("^modal:chain:add:(%d+):(%d+)$")
-          local field = first_condition_chain_field(state.modal)
-          if field and field.kind == "condition_chain" and group_index and condition_index then
-            field.selected_group_index = tonumber(group_index)
-            field.selected_condition_index = tonumber(condition_index)
-            field.chooser = {
-              kind = "operator",
-              anchor = {
-                group_index = tonumber(group_index),
-                condition_index = tonumber(condition_index),
-              },
-              options = {"AND", "OR"},
-              selected = 1,
-            }
-            return true
-          end
-        end
-        if target.id and target.id:match("^modal:chain:condition:") then
-          local group_index, condition_index = target.id:match("^modal:chain:condition:(%d+):(%d+)$")
-          local field = first_condition_chain_field(state.modal)
-          if field and field.kind == "condition_chain" and group_index and condition_index then
-            field.selected_group_index = tonumber(group_index)
-            field.selected_condition_index = tonumber(condition_index)
-            field.chooser = nil
-            return true
-          end
+        if target.id == "modal:chain:condition" and target.modal_chain_field then
+          local field = target.modal_chain_field
+          field.selected_group_index = tonumber(target.group_index)
+          field.selected_condition_index = tonumber(target.condition_index)
+          field.chooser = nil
+          return true
         end
         if target.id and target.id:match("^modal:chain:chooser:") then
-          local field_index, option_index = target.id:match("^modal:chain:chooser:(%d+):(%d+)$")
-          if field_index and option_index then
-            local field = state.modal.fields[tonumber(field_index)]
-            if field then
-              local chooser_row = {
-                field = field,
-                chooser = field.chooser,
-                option_index = tonumber(option_index),
-              }
-              return choose_chain_option(state, chooser_row)
-            end
+          local option_index = tonumber(target.id:match("^modal:chain:chooser:%d+:(%d+)$"))
+          local field = target.modal_chain_field
+          if field and option_index then
+            local chooser_row = {
+              field = field,
+              chooser = field.chooser,
+              option_index = option_index,
+            }
+            return choose_chain_option(state, chooser_row)
           end
         end
-        if target.id and target.id:match("^modal:chain:redstone:add:") then
-          local group_index, condition_index = target.id:match("^modal:chain:redstone:add:(%d+):(%d+)$")
-          local field = first_condition_chain_field(state.modal)
-          if field and field.kind == "condition_chain" and group_index and condition_index then
-            field.selected_group_index = tonumber(group_index)
-            field.selected_condition_index = tonumber(condition_index)
-            field.chooser = {
-              kind = "redstone_output",
-              condition_ref = {
-                group_index = tonumber(group_index),
-                condition_index = tonumber(condition_index),
-              },
-              options = available_redstone_ids_for_route_destination(state.book, field.entry_route.value),
-              selected = 1,
-            }
+        if target.id and target.id:match("^modal:choice:chooser:") then
+          local option_index = tonumber(target.id:match("^modal:choice:chooser:(%d+)$"))
+          local chooser = state.modal.choice_chooser
+          if chooser and option_index and chooser.options[option_index] ~= nil then
+            chooser.selected = option_index
+            chooser.field.value = tostring(chooser.options[option_index])
+            state.modal.choice_chooser = nil
             return true
           end
         end
-        if target.id and target.id:match("^modal:chain:redstone:remove:") then
-          local group_index, condition_index = target.id:match("^modal:chain:redstone:remove:(%d+):(%d+)$")
-          local field = first_condition_chain_field(state.modal)
-          if field and field.kind == "condition_chain" and group_index and condition_index then
-            local condition = field.groups[tonumber(group_index)] and field.groups[tonumber(group_index)].conditions[tonumber(condition_index)]
-            if condition then
-              condition.redstone = nil
-              field.selected_group_index = tonumber(group_index)
-              field.selected_condition_index = tonumber(condition_index)
-              field.chooser = nil
-              return true
+        if target.id and target.id:match("^modal:redstone_rule:add:") then
+          local field_index = tonumber(target.id:match("^modal:redstone_rule:add:(%d+)$"))
+          local field = state.modal.fields[field_index]
+          if field then
+            field.rules[#field.rules + 1] = make_redstone_rule(nil, field.book)
+            field.selected_rule_index = #field.rules
+            return true
+          end
+        end
+        if target.id and target.id:match("^modal:redstone_rule:select:") then
+          local field_index, rule_index = target.id:match("^modal:redstone_rule:select:(%d+):(%d+)$")
+          local field = state.modal.fields[tonumber(field_index or 0)]
+          if field and rule_index then
+            field.selected_rule_index = tonumber(rule_index)
+            return true
+          end
+        end
+        if target.id and target.id:match("^modal:redstone_rule:remove:") then
+          local field_index, rule_index = target.id:match("^modal:redstone_rule:remove:(%d+):(%d+)$")
+          local field = state.modal.fields[tonumber(field_index or 0)]
+          local index_to_remove = tonumber(rule_index)
+          if field and index_to_remove and field.rules[index_to_remove] then
+            table.remove(field.rules, index_to_remove)
+            if #field.rules == 0 then
+              field.selected_rule_index = nil
+            else
+              field.selected_rule_index = clamp(field.selected_rule_index or 1, 1, #field.rules)
             end
+            return true
           end
         end
         if target.id and target.id:match("^modal:group:add:") then
@@ -2750,6 +3070,32 @@ local function handle_click(state, x, y, screen)
           close_modal(state, "Canceled")
           return true
         end
+        if target.modal_row_index then
+          state.modal.active_row = target.modal_row_index
+          local clicked_row = build_modal_rows(state.modal)[target.modal_row_index]
+          if clicked_row and clicked_row.kind == "choice" then
+            return open_choice_chooser(state.modal, clicked_row.field)
+          end
+          if clicked_row and clicked_row.kind == "group_item_field" and clicked_row.subfield.kind == "choice" then
+            return open_choice_chooser(state.modal, clicked_row.subfield)
+          end
+          if clicked_row and clicked_row.kind == "redstone_rule_output" then
+            refresh_rule_output_options(state.modal, clicked_row.rule)
+            return open_choice_chooser(state.modal, clicked_row.rule.output)
+          end
+          if clicked_row and clicked_row.kind == "chain_condition_detail" then
+            if clicked_row.detail == "type" then
+              return begin_existing_condition_type_chooser(clicked_row.field)
+            end
+            if clicked_row.detail == "comparator" then
+              return begin_existing_comparator_chooser(clicked_row.field)
+            end
+            if clicked_row.detail == "scope" then
+              return begin_scope_chooser(state, clicked_row.field)
+            end
+          end
+          return true
+        end
         return false
       end
 
@@ -2765,6 +3111,34 @@ local function handle_click(state, x, y, screen)
         return open_action_modal(state, target.id)
       end
     end
+    ::continue::
+  end
+
+  if state.modal and fallback_row_target and fallback_row_target.modal_row_index then
+    state.modal.active_row = fallback_row_target.modal_row_index
+    local clicked_row = build_modal_rows(state.modal)[fallback_row_target.modal_row_index]
+    if clicked_row and clicked_row.kind == "choice" then
+      return open_choice_chooser(state.modal, clicked_row.field)
+    end
+    if clicked_row and clicked_row.kind == "group_item_field" and clicked_row.subfield.kind == "choice" then
+      return open_choice_chooser(state.modal, clicked_row.subfield)
+    end
+    if clicked_row and clicked_row.kind == "redstone_rule_output" then
+      refresh_rule_output_options(state.modal, clicked_row.rule)
+      return open_choice_chooser(state.modal, clicked_row.rule.output)
+    end
+    if clicked_row and clicked_row.kind == "chain_condition_detail" then
+      if clicked_row.detail == "type" then
+        return begin_existing_condition_type_chooser(clicked_row.field)
+      end
+      if clicked_row.detail == "comparator" then
+        return begin_existing_comparator_chooser(clicked_row.field)
+      end
+      if clicked_row.detail == "scope" then
+        return begin_scope_chooser(state, clicked_row.field)
+      end
+    end
+    return true
   end
 
   return false
@@ -3008,11 +3382,21 @@ local function handle_key_down(state, char_code, key_code)
     if row and row.kind == "chain_chooser" and not row.disabled then
       return choose_chain_option(state, row)
     end
+    if row and row.kind == "choice_chooser" then
+      local chooser = row.chooser
+      chooser.field.value = tostring(chooser.options[row.option_index])
+      state.modal.choice_chooser = nil
+      return true
+    end
     if row and row.kind == "choice" then
-      return cycle_choice_value(row.field, 1)
+      return open_choice_chooser(state.modal, row.field)
     end
     if row and row.kind == "group_item_field" and row.subfield.kind == "choice" then
-      return cycle_choice_value(row.subfield, 1)
+      return open_choice_chooser(state.modal, row.subfield)
+    end
+    if row and row.kind == "redstone_rule_output" then
+      refresh_rule_output_options(state.modal, row.rule)
+      return open_choice_chooser(state.modal, row.rule.output)
     end
     if row and row.kind == "chain_tokens" then
       return true
@@ -3027,47 +3411,11 @@ local function handle_key_down(state, char_code, key_code)
       if row.detail == "scope" then
         return begin_scope_chooser(state, row.field)
       end
-      if row.detail == "redstone_output" then
-        row.field.chooser = {
-          kind = "redstone_output",
-          condition_ref = {
-            group_index = row.field.selected_group_index,
-            condition_index = row.field.selected_condition_index,
-          },
-          options = available_redstone_ids_for_route_destination(state.book, row.field.entry_route.value),
-          selected = 1,
-        }
-        local condition = selected_chain_condition(row.field)
-        local current_output = condition and condition.redstone and condition.redstone.output or nil
-        for index, option in ipairs(row.field.chooser.options or {}) do
-          if option == current_output then
-            row.field.chooser.selected = index
-            break
-          end
-        end
-        return true
-      end
-      if row.detail == "redstone_mode" then
-        local condition = selected_chain_condition(row.field)
-        if condition and type(condition.redstone) == "table" then
-          row.field.chooser = {
-            kind = "redstone_mode",
-            condition_ref = {
-              group_index = row.field.selected_group_index,
-              condition_index = row.field.selected_condition_index,
-            },
-            options = SCHEDULE_REDSTONE_MODES,
-            selected = 1,
-          }
-          for index, option in ipairs(SCHEDULE_REDSTONE_MODES) do
-            if option == condition.redstone.mode then
-              row.field.chooser.selected = index
-              break
-            end
-          end
-          return true
-        end
-      end
+    end
+    if row and row.kind == "redstone_rule_add" then
+      row.field.rules[#row.field.rules + 1] = make_redstone_rule(nil, row.field.book)
+      row.field.selected_rule_index = #row.field.rules
+      return true
     end
     if row and (row.kind == "repeat_add" or row.kind == "group_add") then
       insert_repeatable_item(state.modal, row.field_index, #(row.field.items or {}))
@@ -3085,11 +3433,11 @@ local function handle_key_down(state, char_code, key_code)
     if row and row.kind == "chain_chooser" and not row.disabled then
       return choose_chain_option(state, row)
     end
-    if row and row.kind == "choice" then
-      return cycle_choice_value(row.field, 1)
-    end
-    if row and row.kind == "group_item_field" and row.subfield.kind == "choice" then
-      return cycle_choice_value(row.subfield, 1)
+    if row and row.kind == "choice_chooser" then
+      local chooser = row.chooser
+      chooser.field.value = tostring(chooser.options[row.option_index])
+      state.modal.choice_chooser = nil
+      return true
     end
     return false
   end
@@ -3104,13 +3452,22 @@ local function handle_key_down(state, char_code, key_code)
       state.modal.active_row = target_row or state.modal.active_row
       return true
     end
+    if row and row.kind == "choice_chooser" then
+      row.chooser.selected = clamp((row.chooser.selected or 1) - 1, 1, #(row.chooser.options or {}))
+      local target_row = find_modal_row_index(state.modal, function(candidate)
+        return candidate.kind == "choice_chooser"
+          and candidate.option_index == row.chooser.selected
+      end)
+      state.modal.active_row = target_row or state.modal.active_row
+      return true
+    end
     if row and row.kind == "choice" then
-      return cycle_choice_value(row.field, -1)
+      return false
     end
     if row and row.kind == "group_item_field" and row.subfield.kind == "choice" then
-      return cycle_choice_value(row.subfield, -1)
+      return false
     end
-    if row and row.kind == "chain_condition_detail" and (row.detail == "type" or row.detail == "comparator" or row.detail == "scope" or row.detail == "redstone_mode") then
+    if row and row.kind == "chain_condition_detail" and (row.detail == "type" or row.detail == "comparator" or row.detail == "scope") then
       return true
     end
     if chain_cell then
@@ -3134,13 +3491,22 @@ local function handle_key_down(state, char_code, key_code)
       state.modal.active_row = target_row or state.modal.active_row
       return true
     end
+    if row and row.kind == "choice_chooser" then
+      row.chooser.selected = clamp((row.chooser.selected or 1) + 1, 1, #(row.chooser.options or {}))
+      local target_row = find_modal_row_index(state.modal, function(candidate)
+        return candidate.kind == "choice_chooser"
+          and candidate.option_index == row.chooser.selected
+      end)
+      state.modal.active_row = target_row or state.modal.active_row
+      return true
+    end
     if row and row.kind == "choice" then
-      return cycle_choice_value(row.field, 1)
+      return false
     end
     if row and row.kind == "group_item_field" and row.subfield.kind == "choice" then
-      return cycle_choice_value(row.subfield, 1)
+      return false
     end
-    if row and row.kind == "chain_condition_detail" and (row.detail == "type" or row.detail == "comparator" or row.detail == "scope" or row.detail == "redstone_mode") then
+    if row and row.kind == "chain_condition_detail" and (row.detail == "type" or row.detail == "comparator" or row.detail == "scope") then
       return true
     end
     if chain_cell then
@@ -3817,6 +4183,7 @@ local exports = {
   make_repeatable_group_field = make_repeatable_group_field,
   make_chain_condition = make_chain_condition,
   make_condition_chain_field = make_condition_chain_field,
+  make_redstone_rules_field = make_redstone_rules_field,
   split_legacy_waypoint_string = split_legacy_waypoint_string,
   waypoint_rows_from_route = waypoint_rows_from_route,
   scope_to_editor_text = scope_to_editor_text,
@@ -3832,12 +4199,15 @@ local exports = {
   available_redstone_ids_for_route_destination = available_redstone_ids_for_route_destination,
   runtime_condition_from_editor = runtime_condition_from_editor,
   runtime_groups_from_chain = runtime_groups_from_chain,
+  runtime_redstone_rules_from_chain = runtime_redstone_rules_from_editor,
+  runtime_redstone_rules_from_editor = runtime_redstone_rules_from_editor,
   redstone_output_rows_from_station = redstone_output_rows_from_station,
   collect_redstone_outputs = collect_redstone_outputs,
   validate_redstone_output_rows = validate_redstone_output_rows,
   build_group_item_fields = build_group_item_fields,
   group_field_by_key = group_field_by_key,
   inspect_redstone_runtime = inspect_redstone_runtime,
+  group_label = group_label,
   handle_key_down = handle_key_down,
   handle_scroll = handle_scroll,
   wrap_text = wrap_text,

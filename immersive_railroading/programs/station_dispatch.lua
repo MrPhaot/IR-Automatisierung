@@ -450,7 +450,7 @@ local function run(schedule_name, options)
       })
 
       local station = route_book.STATIONS[station_id]
-      local session = station_schedule.create_wait_session(route_book, station_id, entry.wait, detector_reader)
+      local session = station_schedule.create_wait_session(route_book, station_id, entry, detector_reader)
       local wait_complete = false
       while not wait_complete do
         local signal, net_address, augment_type, stock_uuid = sleep_for(0.2)

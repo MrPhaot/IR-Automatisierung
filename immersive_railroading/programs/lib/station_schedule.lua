@@ -186,6 +186,62 @@ function M.validate(route_book, schedule_name)
                 end
               end
             end
+
+            local redstone = entry.redstone
+            if redstone ~= nil then
+              if type(redstone) ~= "table" or type(redstone.rules) ~= "table" then
+                errors[#errors + 1] = ("schedule %s entry %d redstone.rules must be a table"):format(name, index)
+              else
+                for rule_index, rule in ipairs(redstone.rules) do
+                  if type(rule.output) ~= "string" then
+                    errors[#errors + 1] = ("schedule %s entry %d redstone rule %d requires output"):format(name, index, rule_index)
+                  else
+                    local station = route_book.STATIONS[station_id]
+                    local outputs = station and station.redstone_outputs or {}
+                    if not outputs[rule.output] then
+                      errors[#errors + 1] = ("schedule %s entry %d redstone rule %d references unknown station output %s"):format(
+                        name,
+                        index,
+                        rule_index,
+                        tostring(rule.output)
+                      )
+                    end
+                  end
+                  if type(rule.groups) ~= "table" or #rule.groups == 0 then
+                    errors[#errors + 1] = ("schedule %s entry %d redstone rule %d requires groups"):format(name, index, rule_index)
+                  else
+                    for group_index, group in ipairs(rule.groups) do
+                      if type(group) ~= "table" or #group == 0 then
+                        errors[#errors + 1] = ("schedule %s entry %d redstone rule %d group %d must contain conditions"):format(
+                          name,
+                          index,
+                          rule_index,
+                          group_index
+                        )
+                      else
+                        for condition_index, condition in ipairs(group) do
+                          local plain_condition = {}
+                          for key, value in pairs(condition) do
+                            plain_condition[key] = value
+                          end
+                          plain_condition.redstone = nil
+                          for _, message in ipairs(M.validate_condition(route_book, station_id, plain_condition)) do
+                            errors[#errors + 1] = ("schedule %s entry %d redstone rule %d group %d condition %d: %s"):format(
+                              name,
+                              index,
+                              rule_index,
+                              group_index,
+                              condition_index,
+                              message
+                            )
+                          end
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+            end
           end
         end
       end
@@ -210,18 +266,90 @@ local function resolve_detector_ids(station, condition)
 end
 
 function M.create_wait_session(route_book, station_id, wait, detector_reader)
+  local entry = wait
+  if type(wait) ~= "table" or wait.route == nil then
+    entry = {
+      wait = wait,
+      redstone = {rules = {}},
+    }
+  end
   local station = assert(M.resolve_station(route_book, station_id))
   return {
     route_book = route_book,
     station_id = station_id,
     station = station,
-    wait = wait or {groups = {{{type = "time_passed", seconds = 0}}}},
+    entry = entry,
+    wait = entry.wait or {groups = {{{type = "time_passed", seconds = 0}}}},
     detector_reader = detector_reader or function() return {} end,
     started_at = nil,
     last_activity_at = nil,
     last_metrics = {},
     completed = false,
   }
+end
+
+local function evaluate_condition(session, condition, detector_snapshots, now)
+  local complete = false
+  if condition.type == "time_passed" then
+    complete = (now - session.started_at) >= condition.seconds
+  elseif condition.type == "inactivity" then
+    complete = (now - session.last_activity_at) >= condition.seconds
+  else
+    local detector_ids = resolve_detector_ids(session.station, condition)
+    local samples = {}
+    for _, detector_id in ipairs(detector_ids) do
+      local sample = detector_snapshots[detector_id]
+      if sample then
+        samples[#samples + 1] = sample.info or {}
+        local metric = metric_from_info(condition, sample.info or {})
+        local threshold = inactivity_threshold(condition.type)
+        local last_key = detector_id .. ":" .. condition.type
+        local previous_metric = session.last_metrics[last_key]
+        if metric ~= nil and threshold and previous_metric ~= nil and math.abs(metric - previous_metric) >= threshold then
+          session.last_activity_at = now
+        end
+        if metric ~= nil then
+          session.last_metrics[last_key] = metric
+        end
+      end
+    end
+
+    if #samples > 0 then
+      if condition.scope == "station_all_detectors" then
+        complete = true
+        for _, info in ipairs(samples) do
+          if not compare(metric_from_info(condition, info) or 0, condition.comparator, condition.value) then
+            complete = false
+            break
+          end
+        end
+      else
+        for _, info in ipairs(samples) do
+          if compare(metric_from_info(condition, info) or 0, condition.comparator, condition.value) then
+            complete = true
+            break
+          end
+        end
+      end
+    end
+  end
+  return complete
+end
+
+function M.evaluate_rule_groups(groups, station, detector_snapshots, session, now)
+  local any_group_complete = false
+  for _, group in ipairs(groups or {}) do
+    local group_complete = true
+    for _, condition in ipairs(group or {}) do
+      if not evaluate_condition(session, condition, detector_snapshots, now) then
+        group_complete = false
+      end
+    end
+    if group_complete then
+      any_group_complete = true
+    end
+  end
+  return any_group_complete
 end
 
 function M.tick_wait_session(session, now)
@@ -236,50 +364,7 @@ function M.tick_wait_session(session, now)
   for group_index, group in ipairs(session.wait.groups or {}) do
     local group_complete = true
     for condition_index, condition in ipairs(group) do
-      local complete = false
-      if condition.type == "time_passed" then
-        complete = (now - session.started_at) >= condition.seconds
-      elseif condition.type == "inactivity" then
-        complete = (now - session.last_activity_at) >= condition.seconds
-      else
-        local detector_ids = resolve_detector_ids(session.station, condition)
-        local samples = {}
-        for _, detector_id in ipairs(detector_ids) do
-          local sample = detector_snapshots[detector_id]
-          if sample then
-            samples[#samples + 1] = sample.info or {}
-            local metric = metric_from_info(condition, sample.info or {})
-            local threshold = inactivity_threshold(condition.type)
-            local last_key = detector_id .. ":" .. condition.type
-            local previous_metric = session.last_metrics[last_key]
-            if metric ~= nil and threshold and previous_metric ~= nil and math.abs(metric - previous_metric) >= threshold then
-              session.last_activity_at = now
-            end
-            if metric ~= nil then
-              session.last_metrics[last_key] = metric
-            end
-          end
-        end
-
-        if #samples > 0 then
-          if condition.scope == "station_all_detectors" then
-            complete = true
-            for _, info in ipairs(samples) do
-              if not compare(metric_from_info(condition, info) or 0, condition.comparator, condition.value) then
-                complete = false
-                break
-              end
-            end
-          else
-            for _, info in ipairs(samples) do
-              if compare(metric_from_info(condition, info) or 0, condition.comparator, condition.value) then
-                complete = true
-                break
-              end
-            end
-          end
-        end
-      end
+      local complete = evaluate_condition(session, condition, detector_snapshots, now)
 
       if condition.redstone and condition.redstone.mode == "while_pending" and not complete then
         pending_outputs[condition.redstone.output] = true
@@ -292,6 +377,16 @@ function M.tick_wait_session(session, now)
 
     if group_complete then
       groups_complete = true
+    end
+  end
+
+  if not groups_complete then
+    for _, rule in ipairs(session.entry and session.entry.redstone and session.entry.redstone.rules or {}) do
+      if type(rule.output) == "string" and rule.output ~= "" then
+        if M.evaluate_rule_groups(rule.groups, session.station, detector_snapshots, session, now) then
+          pending_outputs[rule.output] = true
+        end
+      end
     end
   end
 
@@ -318,5 +413,6 @@ end
 
 M.compare = compare
 M.metric_from_info = metric_from_info
+M.evaluate_rule_groups = M.evaluate_rule_groups
 
 return M

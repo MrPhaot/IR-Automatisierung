@@ -125,9 +125,9 @@ local PROFILES = {
     buffer_settle_speed_mps = 0,
     buffer_settle_throttle_limit = 0,
     buffer_settle_max_longitudinal_m = 0,
-    buffer_settle_reverse_speed_mps = 0,
-    buffer_settle_reverse_throttle_limit = 0,
-    buffer_settle_reverse_max_overshoot_m = 0,
+    buffer_settle_reverse_speed_mps = 0.35,
+    buffer_settle_reverse_throttle_limit = 0.04,
+    buffer_settle_reverse_max_overshoot_m = 10.0,
     buffer_settle_max_lateral_m = 1.0,
     launch_throttle_scale = 0.75,
     brake_exit_margin_mps = 0.2,
@@ -1037,7 +1037,7 @@ local function reverse_buffer_settle_block_reason(
   if not stop_context or not stop_context.in_no_reverse_approach then
     return "outside_no_reverse_approach"
   end
-  if profile.name ~= "fast" or (profile.buffer_settle_reverse_speed_mps or 0) <= 0 then
+  if (profile.buffer_settle_reverse_speed_mps or 0) <= 0 then
     return "profile_disabled"
   end
   if stop_context.must_stop_now then
@@ -1066,6 +1066,75 @@ local function reverse_buffer_settle_block_reason(
     return "axis_speed_too_high"
   end
   return nil
+end
+
+local function terminal_stop_first_force_mode(state, speed_toward_target_mps, axis_speed_mps)
+  if not (state and state.stop_first_active and not state.stopped_after_overshoot) then
+    return nil, nil
+  end
+  if math.abs(speed_toward_target_mps) > DEFAULTS.arrival_speed_mps
+    or math.abs(axis_speed_mps) > DEFAULTS.arrival_speed_mps then
+    return "full_brake", "stop_first_brake"
+  end
+  return "hold", "stop_first_settle"
+end
+
+local function terminal_buffer_settle_drive_limit(profile, buffer_settle_mode, buffer_settle_block_reason)
+  if buffer_settle_mode == "forward" then
+    if buffer_settle_block_reason == "deadlock_forward_recovery" then
+      return profile.buffer_settle_forward_deadlock_throttle_limit
+        or DEFAULTS.near_target_correction_throttle_limit
+    end
+    return profile.buffer_settle_forward_throttle_limit
+  elseif buffer_settle_mode == "reverse" then
+    return profile.buffer_settle_reverse_throttle_limit
+  end
+  return nil
+end
+
+local function is_late_buffer_station_arrival(
+  profile,
+  state,
+  stop_context,
+  distance_to_stop_target_m,
+  stop_longitudinal_distance_m,
+  stop_lateral_error_m,
+  distance_to_physical_target_m,
+  physical_lateral_error_m,
+  stop_buffer_m,
+  speed_toward_target_mps,
+  axis_speed_mps
+)
+  if not (state and state.late_stop_capture and state.stopped_after_overshoot) then
+    return false
+  end
+  if state.stop_first_active or state.near_target_correction_active then
+    return false
+  end
+  if state.buffer_settle_mode ~= "none" then
+    return false
+  end
+  if not (stop_context and stop_context.in_no_reverse_approach) then
+    return false
+  end
+  if math.abs(speed_toward_target_mps) > DEFAULTS.arrival_speed_mps
+    or math.abs(axis_speed_mps) > DEFAULTS.arrival_speed_mps then
+    return false
+  end
+  local stop_ok = is_strict_arrival(
+    distance_to_stop_target_m,
+    stop_longitudinal_distance_m,
+    stop_lateral_error_m,
+    speed_toward_target_mps
+  )
+  local physical_ok = is_terminal_success_physical_ok(
+    profile,
+    distance_to_physical_target_m,
+    stop_buffer_m
+  ) and physical_lateral_error_m <= (
+    profile.buffer_settle_max_lateral_m or DEFAULTS.near_target_correction_lateral_m
+  )
+  return stop_ok and physical_ok
 end
 
 local function is_terminal_limit_arrival(distance_to_target_m, longitudinal_distance_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps, stop_context, terminal_success_consistent)
@@ -3241,16 +3310,18 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         )
 
       if state.stop_first_active and state.stopped_after_overshoot and not near_target_hold then
-        local can_correct = is_near_target_correction_candidate(
+        local allow_buffer_settle = state.late_stop_capture == true
+        local can_correct = (not allow_buffer_settle) and is_near_target_correction_candidate(
           distance_to_stop_target_m,
           stop_longitudinal_distance_m,
           stop_lateral_error_m
         )
         state.stop_first_active = false
-        state.stopped_after_overshoot = false
+        state.stopped_after_overshoot = allow_buffer_settle
         state.halted_near_target_since = nil
         state.near_target_correction_active = can_correct
-        state.near_target_resolution = can_correct and "correct" or "limit"
+        state.near_target_resolution = allow_buffer_settle and "buffer_settle_pending"
+          or (can_correct and "correct" or "limit")
         state.brake_release_until = nil
       end
 
@@ -3278,6 +3349,21 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         true
       )
       terminal_success_physical_ok = state.terminal_success_physical_ok
+      local late_buffer_arrival = is_late_buffer_station_arrival(
+        profile,
+        state,
+        stop_context,
+        distance_to_stop_target_m,
+        stop_longitudinal_distance_m,
+        stop_lateral_error_m,
+        distance_to_physical_target_m,
+        physical_lateral_error_m,
+        state.effective_stop_buffer_m,
+        speed_toward_target_mps,
+        axis_speed_mps
+      )
+      terminal_success_stop_ok = terminal_success_stop_ok or late_buffer_arrival
+      terminal_success_physical_ok = terminal_success_physical_ok or late_buffer_arrival
       terminal_success_consistent = is_terminal_success_consistent(
         terminal_success_stop_ok,
         terminal_success_physical_ok
@@ -3718,6 +3804,18 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.phase = "tracking"
       end
 
+      local stop_first_force_mode, stop_first_reason = terminal_stop_first_force_mode(
+        state,
+        speed_toward_target_mps,
+        axis_speed_mps
+      )
+      if stop_first_force_mode then
+        speed_plan_force_mode = stop_first_force_mode
+        speed_plan_desired_reverser = state.active_reverser
+        planner_reason = stop_first_reason
+        state.phase = "tracking"
+      end
+
       if speed_plan_force_mode == "auto"
         and speed_command_mps <= DEFAULTS.arrival_speed_mps * 2
         and math.abs(speed_error) <= DEFAULTS.arrival_speed_mps then
@@ -3762,6 +3860,16 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           independent_brake = 0,
         }
         state.mode = "coast"
+      elseif speed_plan.force_mode == "hold" then
+        runtime_context.integral = 0
+        state.previous_effort_cmd = 0
+        control = {
+          throttle = 0,
+          reverser = 0,
+          brake = DEFAULTS.hold_brake,
+          independent_brake = DEFAULTS.hold_independent_brake,
+        }
+        state.mode = "hold"
       else
         if stop_context.in_approach_stop or stop_context.in_no_reverse_approach then
           runtime_context.integral = runtime_context.integral * profile.end_phase_integral_decay
@@ -3806,6 +3914,14 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
           dt_s,
           slew_rate_per_s
         )
+        local settle_drive_limit = terminal_buffer_settle_drive_limit(
+          profile,
+          buffer_settle_mode,
+          buffer_settle_block_reason
+        )
+        if settle_drive_limit and effort_cmd > settle_drive_limit then
+          effort_cmd = settle_drive_limit
+        end
         local previous_sign = effort_sign(state.previous_effort_cmd)
         local current_sign = effort_sign(effort_cmd)
         if previous_sign ~= 0 and current_sign ~= 0 and previous_sign ~= current_sign then
@@ -4208,6 +4324,11 @@ local exports = {
   can_enter_stop_guidance = can_enter_stop_guidance,
   is_terminal_success_physical_ok = is_terminal_success_physical_ok,
   is_terminal_success_consistent = is_terminal_success_consistent,
+  forward_buffer_settle_block_reason = forward_buffer_settle_block_reason,
+  reverse_buffer_settle_block_reason = reverse_buffer_settle_block_reason,
+  terminal_stop_first_force_mode = terminal_stop_first_force_mode,
+  terminal_buffer_settle_drive_limit = terminal_buffer_settle_drive_limit,
+  is_late_buffer_station_arrival = is_late_buffer_station_arrival,
   terminal_failure_arming_allowed = terminal_failure_arming_allowed,
   should_enter_stop_guidance = should_enter_stop_guidance,
 }
