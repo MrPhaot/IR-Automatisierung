@@ -18,6 +18,14 @@ Station binding rule:
 
 ## Wait Semantics
 
+Schedule entries are station stops. Prefer:
+- `entry.station = "station_id"`
+- `entry.route = "route_id"` when the next path should be explicit
+
+If `entry.route` is omitted, `station_dispatch.lua` resolves exactly one route from `current_station_id` to `entry.station`.
+
+Routes are directed station edges. Prefer `from`, `to`, and `via`; legacy `waypoints` remain readable. `via` points are guardrails only, not station waits.
+
 `wait.groups` is disjunctive normal form:
 - OR between groups
 - AND within a group

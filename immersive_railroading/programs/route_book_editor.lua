@@ -536,6 +536,9 @@ route_destination_station_id = function(book, route_id)
     return nil
   end
   local route = book and book.ROUTES and book.ROUTES[route_id]
+  if type(route and route.to) == "string" then
+    return route.to
+  end
   local last_waypoint = route and route.waypoints and route.waypoints[#route.waypoints]
   if type(last_waypoint) == "string" then
     return last_waypoint
@@ -809,6 +812,40 @@ local function collect_waypoints(values)
           out[#out + 1] = trimmed
         end
       end
+    end
+  end
+  return out
+end
+
+local function route_via_rows(route)
+  return waypoint_rows_from_route(route and (route.via or route.waypoints) or {})
+end
+
+local function schedule_entry_rows(schedule)
+  local rows = {}
+  for _, entry in ipairs(schedule and schedule.entries or {}) do
+    rows[#rows + 1] = ("%s | %s"):format(entry.station or "", entry.route or "")
+  end
+  if #rows == 0 then
+    rows[1] = ""
+  end
+  return rows
+end
+
+local function collect_schedule_entry_refs(values)
+  local out = {}
+  for _, raw in ipairs(values.entries or {}) do
+    local text = trim(raw)
+    if text ~= "" then
+      local station, route = text:match("^%s*([^|]*)%s*|%s*(.-)%s*$")
+      if not station then
+        station = text
+        route = ""
+      end
+      out[#out + 1] = {
+        station = trim(station) ~= "" and trim(station) or nil,
+        route = trim(route) ~= "" and trim(route) or nil,
+      }
     end
   end
   return out
@@ -2565,7 +2602,9 @@ local function open_action_modal(state, action)
         title = "Add Route",
         fields = {
           make_text_field({key = "id", label = "Route ID"}),
-          make_repeatable_text_field({key = "waypoints", label = "Waypoints", values = {""}, min_items = 1}),
+          make_text_field({key = "from", label = "From Station"}),
+          make_text_field({key = "to", label = "To Station"}),
+          make_repeatable_text_field({key = "waypoints", label = "Via", values = {""}, min_items = 0}),
           make_text_field({key = "cruise_kmh", label = "Cruise km/h", value = "40"}),
           make_text_field({key = "stop_buffer_m", label = "Stop buffer", value = "2"}),
           make_text_field({key = "profile", label = "Profile", value = "conservative"}),
@@ -2575,7 +2614,9 @@ local function open_action_modal(state, action)
             return false, "Route ID required"
           end
           current_state.book.ROUTES[values.id] = {
-            waypoints = collect_waypoints(values),
+            from = trim(values.from),
+            to = trim(values.to),
+            via = collect_waypoints(values),
             cruise_kmh = tonumber(values.cruise_kmh) or 40,
             stop_buffer_m = tonumber(values.stop_buffer_m) or 2,
             profile = values.profile ~= "" and values.profile or "conservative",
@@ -2593,13 +2634,18 @@ local function open_action_modal(state, action)
       open_modal(state, {
         title = "Edit Route",
         fields = {
-          make_repeatable_text_field({key = "waypoints", label = "Waypoints", values = waypoint_rows_from_route(route.waypoints), min_items = 1}),
+          make_text_field({key = "from", label = "From Station", value = tostring(route.from or "")}),
+          make_text_field({key = "to", label = "To Station", value = tostring(route.to or "")}),
+          make_repeatable_text_field({key = "waypoints", label = "Via", values = route_via_rows(route), min_items = 0}),
           make_text_field({key = "cruise_kmh", label = "Cruise km/h", value = tostring(route.cruise_kmh or 40)}),
           make_text_field({key = "stop_buffer_m", label = "Stop buffer", value = tostring(route.stop_buffer_m or 2)}),
           make_text_field({key = "profile", label = "Profile", value = route.profile or "conservative"}),
         },
         on_submit = function(current_state, values)
-          route.waypoints = collect_waypoints(values)
+          route.from = trim(values.from) ~= "" and trim(values.from) or nil
+          route.to = trim(values.to) ~= "" and trim(values.to) or nil
+          route.via = collect_waypoints(values)
+          route.waypoints = nil
           route.cruise_kmh = tonumber(values.cruise_kmh) or route.cruise_kmh or 40
           route.stop_buffer_m = tonumber(values.stop_buffer_m) or route.stop_buffer_m or 2
           route.profile = values.profile ~= "" and values.profile or route.profile or "conservative"
@@ -2621,7 +2667,7 @@ local function open_action_modal(state, action)
         fields = {
           make_text_field({key = "id", label = "Schedule ID"}),
           make_section_field("Schedule Settings"),
-          make_text_field({key = "route", label = "Route"}),
+          make_repeatable_text_field({key = "entries", label = "Entries station | route", values = {""}, min_items = 1}),
           make_choice_field({key = "cyclic", label = "Cyclic", value = "false", options = BOOLEAN_OPTIONS}),
           make_section_field("Wait Conditions"),
           make_condition_chain_field(nil),
@@ -2634,18 +2680,20 @@ local function open_action_modal(state, action)
           end
           current_state.book.SCHEDULES[values.id] = {
             cyclic = values.cyclic == "true",
-            entries = trim(values.route) ~= "" and {
-              {
-                route = values.route,
+            entries = {},
+          }
+          for _, ref in ipairs(collect_schedule_entry_refs(values)) do
+            current_state.book.SCHEDULES[values.id].entries[#current_state.book.SCHEDULES[values.id].entries + 1] = {
+              station = ref.station,
+              route = ref.route,
                 wait = {
                   groups = values.wait_chain.groups,
                 },
                 redstone = {
                   rules = values.redstone_rules or {},
                 },
-              },
-            } or {},
-          }
+            }
+          end
           current_state.dirty = true
           return true, "Schedule added"
         end,
@@ -2660,7 +2708,7 @@ local function open_action_modal(state, action)
       local legacy_refs = legacy_redstone_refs(first_entry)
       local edit_fields = {
         make_section_field("Schedule Settings"),
-        make_text_field({key = "route", label = "Route", value = tostring(first_entry and first_entry.route or "")}),
+        make_repeatable_text_field({key = "entries", label = "Entries station | route", values = schedule_entry_rows(schedule), min_items = 1}),
         make_choice_field({key = "cyclic", label = "Cyclic", value = tostring(schedule.cyclic == true), options = BOOLEAN_OPTIONS}),
       }
       if #legacy_refs > 0 then
@@ -2679,17 +2727,22 @@ local function open_action_modal(state, action)
         fields = edit_fields,
         on_submit = function(current_state, values)
           schedule.cyclic = values.cyclic == "true"
-          if trim(values.route) ~= "" then
-            schedule.entries[1] = {
-              route = values.route,
+          local refs = collect_schedule_entry_refs(values)
+          local next_entries = {}
+          for index, ref in ipairs(refs) do
+            local previous = schedule.entries and schedule.entries[index] or {}
+            next_entries[#next_entries + 1] = {
+              station = ref.station,
+              route = ref.route,
               wait = {
-                groups = values.wait_chain.groups,
+                groups = index == 1 and values.wait_chain.groups or (previous.wait and previous.wait.groups) or values.wait_chain.groups,
               },
               redstone = {
-                rules = values.redstone_rules or {},
+                rules = index == 1 and (values.redstone_rules or {}) or (previous.redstone and previous.redstone.rules) or {},
               },
             }
           end
+          schedule.entries = next_entries
           current_state.dirty = true
           return true, "Schedule updated"
         end,
@@ -2817,11 +2870,14 @@ local function build_screen(state, width, height)
       local route = state.book.ROUTES[selected.id]
       detail_lines = {
         ("Route: %s"):format(selected.id),
+        ("From: %s"):format(route.from or "<legacy>"),
+        ("To: %s"):format(route.to or route_destination_station_id(state.book, selected.id) or "<unknown>"),
         ("Profile: %s"):format(route.profile or "conservative"),
       }
-      for index, waypoint in ipairs(route.waypoints or {}) do
+      local via = route.via or route.waypoints or {}
+      for index, waypoint in ipairs(via) do
         local waypoint_text = type(waypoint) == "string" and waypoint or ("%s,%s,%s"):format(waypoint.x, waypoint.y, waypoint.z)
-        detail_lines[#detail_lines + 1] = ("[%d] %s"):format(index, waypoint_text)
+        detail_lines[#detail_lines + 1] = ("Via [%d] %s"):format(index, waypoint_text)
       end
     end
     if layout.tier == "comfort" then
@@ -2840,7 +2896,7 @@ local function build_screen(state, width, height)
       local schedule = state.book.SCHEDULES[selected.id]
       local entry_lines = {}
       for index, entry in ipairs(schedule.entries or {}) do
-        entry_lines[#entry_lines + 1] = ("[%d] %s"):format(index, entry.route or "")
+        entry_lines[#entry_lines + 1] = ("[%d] station=%s route=%s"):format(index, entry.station or "-", entry.route or "<auto>")
       end
       render_wrapped_lines(buffer, layout.schedule_entries.x + 2, layout.schedule_entries.y + 2, layout.schedule_entries.width - 4, math.max(layout.schedule_entries.height - 3, 0), entry_lines, state.panel_scrolls.schedule_entries)
       local first_entry = schedule.entries and schedule.entries[1]
@@ -4195,6 +4251,9 @@ local exports = {
   collect_modal_values = collect_modal_values,
   collect_detector_ids = collect_detector_ids,
   collect_waypoints = collect_waypoints,
+  route_via_rows = route_via_rows,
+  schedule_entry_rows = schedule_entry_rows,
+  collect_schedule_entry_refs = collect_schedule_entry_refs,
   route_destination_station_id = route_destination_station_id,
   available_redstone_ids_for_route_destination = available_redstone_ids_for_route_destination,
   runtime_condition_from_editor = runtime_condition_from_editor,

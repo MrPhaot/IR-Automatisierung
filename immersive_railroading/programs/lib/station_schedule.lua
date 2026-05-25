@@ -70,16 +70,34 @@ function M.resolve_station(route_book, station_id)
   return station
 end
 
+local function route_terminal_station_id(route)
+  if type(route) ~= "table" then
+    return nil
+  end
+  if type(route.to) == "string" then
+    return route.to
+  end
+  local last_waypoint = route.waypoints and route.waypoints[#route.waypoints]
+  if type(last_waypoint) == "string" then
+    return last_waypoint
+  end
+  return nil
+end
+
 function M.resolve_entry_station_id(route_book, entry)
+  if type(entry.station) == "string" then
+    return entry.station
+  end
+
   local route = route_book.ROUTES[entry.route]
   if type(route) ~= "table" then
     return nil, ("schedule entry references unknown route %s"):format(tostring(entry.route))
   end
-  local last_waypoint = route.waypoints and route.waypoints[#route.waypoints]
-  if type(last_waypoint) ~= "string" then
-    return nil, ("route %s must end at a station id for scheduling"):format(entry.route)
+  local station_id = route_terminal_station_id(route)
+  if not station_id then
+    return nil, ("route %s must end at a station id or entry.station must be set"):format(entry.route)
   end
-  return last_waypoint
+  return station_id
 end
 
 function M.validate_condition(route_book, station_id, condition)
@@ -157,9 +175,31 @@ function M.validate(route_book, schedule_name)
         warnings[#warnings + 1] = ("schedule %s has no entries"):format(name)
       end
       for index, entry in ipairs(schedule.entries or {}) do
-        if type(entry.route) ~= "string" then
-          errors[#errors + 1] = ("schedule %s entry %d requires route"):format(name, index)
+        if type(entry.station) == "string" and not route_book.STATIONS[entry.station] then
+          errors[#errors + 1] = ("schedule %s entry %d references unknown station %s"):format(name, index, entry.station)
+        end
+        if entry.route ~= nil and type(entry.route) ~= "string" then
+          errors[#errors + 1] = ("schedule %s entry %d route must be a string when present"):format(name, index)
+        elseif entry.route == nil and type(entry.station) ~= "string" then
+          errors[#errors + 1] = ("schedule %s entry %d requires station when route is omitted"):format(name, index)
         else
+          if type(entry.route) == "string" and type(entry.station) == "string" then
+            local route = route_book.ROUTES and route_book.ROUTES[entry.route]
+            if type(route) ~= "table" then
+              errors[#errors + 1] = ("schedule %s entry %d references unknown route %s"):format(name, index, entry.route)
+            else
+              local route_station = route_terminal_station_id(route)
+              if route_station and route_station ~= entry.station then
+                errors[#errors + 1] = ("schedule %s entry %d station %s does not match route %s destination %s"):format(
+                  name,
+                  index,
+                  entry.station,
+                  entry.route,
+                  route_station
+                )
+              end
+            end
+          end
           local station_id, station_error = M.resolve_entry_station_id(route_book, entry)
           if not station_id then
             errors[#errors + 1] = ("schedule %s entry %d: %s"):format(name, index, station_error)
@@ -414,5 +454,6 @@ end
 M.compare = compare
 M.metric_from_info = metric_from_info
 M.evaluate_rule_groups = M.evaluate_rule_groups
+M.route_terminal_station_id = route_terminal_station_id
 
 return M

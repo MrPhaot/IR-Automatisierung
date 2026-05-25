@@ -78,9 +78,11 @@ local kd = kp * math.min(t_drive, t_brake)
 ## Why Curve Handling Uses Explicit Geometry
 
 - The controller still does not know the rail graph, junction state, or future curve tangent from the API alone.
-- V1 therefore handles curves by splitting a run into explicit legs from `--via` or `route_book.lua`.
-- Intermediate legs stay in pass-through tracking so the train keeps a route-aligned frame without trying to stop at each waypoint.
+- V1 therefore handles curves by splitting a run into explicit legs from `--via` or route-book `via`.
+- Route-book routes are directed `from -> to` station edges. `via` points are guardrails only.
+- Intermediate legs stay in pass-through tracking so the train keeps a route-aligned frame without trying to stop or wait at each waypoint.
 - Only the final leg re-enters the full terminal arrival logic.
+- Pass-through auto mode suppresses service brake when the train is clearly below target speed; force modes such as moving-away and reverser mismatch can still brake.
 
 ## Known Limits
 

@@ -54,6 +54,15 @@ Implementation consequence:
 - station schedules may drive output-only redstone in V1
 - redstone input remains intentionally out of scope
 
+## Route Graph Scope
+
+No native IR rail topology API is used in V1. The schedule graph is manual route-book data:
+- `ROUTES[id].from`
+- `ROUTES[id].to`
+- `ROUTES[id].via`
+
+Dispatcher cold-start guardrail picking uses only stored coordinates plus a short remote-control heading probe.
+
 ## Confirmed Runtime Fields From Real `inspect`
 Observed on the OpenComputers test machine:
 

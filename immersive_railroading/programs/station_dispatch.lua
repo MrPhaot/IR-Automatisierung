@@ -200,6 +200,18 @@ local function validate_route_book(route_book, schedule_name)
     end
   end
 
+  for route_id, route in pairs(route_book.ROUTES or {}) do
+    if route.from ~= nil and not route_book.STATIONS[route.from] then
+      errors[#errors + 1] = ("route %s references unknown from station %s"):format(route_id, tostring(route.from))
+    end
+    if route.to ~= nil and not route_book.STATIONS[route.to] then
+      errors[#errors + 1] = ("route %s references unknown to station %s"):format(route_id, tostring(route.to))
+    end
+    if route.via ~= nil and type(route.via) ~= "table" then
+      errors[#errors + 1] = ("route %s via must be a list"):format(route_id)
+    end
+  end
+
   local schedule_result = station_schedule.validate(route_book, schedule_name)
   for _, message in ipairs(schedule_result.errors) do
     errors[#errors + 1] = message
@@ -318,6 +330,96 @@ local function print_validation(result)
   end
 end
 
+local function resolve_route_for_entry(route_book, current_station_id, entry)
+  if type(entry.route) == "string" then
+    return entry.route
+  end
+
+  if not current_station_id then
+    return nil, "first schedule entry must define route when current station is unknown"
+  end
+  if type(entry.station) ~= "string" then
+    return nil, "schedule entry without route must define station"
+  end
+
+  local matches = {}
+  for route_id, route in pairs(route_book.ROUTES or {}) do
+    if route.from == current_station_id and route.to == entry.station then
+      matches[#matches + 1] = route_id
+    end
+  end
+  table.sort(matches)
+
+  if #matches == 0 then
+    return nil, ("no route from %s to %s"):format(current_station_id, entry.station)
+  end
+  if #matches > 1 then
+    return nil, ("multiple routes from %s to %s: %s"):format(current_station_id, entry.station, table.concat(matches, ", "))
+  end
+  return matches[1]
+end
+
+local function build_schedule_guardrail_candidates(route_book, schedule, current_station_id)
+  local candidates = {}
+  local fallback_axis = nil
+  for entry_index, entry in ipairs(schedule.entries or {}) do
+    local route_id = select(1, resolve_route_for_entry(route_book, current_station_id, entry))
+    if route_id then
+      local ok, route_plan_or_error = pcall(train_controller.build_named_route_plan, route_id, {
+        profile_name = nil,
+        profile_explicit = false,
+        via_points = {},
+      }, route_book)
+      if ok and route_plan_or_error then
+        local route_plan = route_plan_or_error
+        if not fallback_axis and #route_plan.legs >= 2 then
+          fallback_axis = train_controller.horizontal_axis({
+            x = route_plan.legs[2].target.x - route_plan.legs[1].target.x,
+            y = route_plan.legs[2].target.y - route_plan.legs[1].target.y,
+            z = route_plan.legs[2].target.z - route_plan.legs[1].target.z,
+          })
+        end
+        for _, leg in ipairs(route_plan.legs) do
+          candidates[#candidates + 1] = {
+            point = leg.target,
+            entry_index = entry_index,
+            route_id = route_id,
+            leg_index = leg.index,
+          }
+        end
+      end
+    end
+  end
+  return candidates, fallback_axis
+end
+
+local function pick_schedule_start(route_book, schedule, remote, logger, current_station_id)
+  local candidates, fallback_axis = build_schedule_guardrail_candidates(route_book, schedule, current_station_id)
+  local heading, heading_reason = train_controller.sample_heading(remote, fallback_axis, logger)
+  if not heading then
+    return nil, "missing_heading:" .. tostring(heading_reason)
+  end
+  local position_ok, x_or_error, y, z = pcall(function()
+    local x, y, z = remote.getPos()
+    return x, y, z
+  end)
+  if not position_ok then
+    return nil, "failed to read train position for schedule start: " .. tostring(x_or_error)
+  end
+  local position = {x = x_or_error, y = y, z = z}
+  local candidate, reason = train_controller.choose_forward_guardrail(candidates, position, heading)
+  if not candidate then
+    return nil, reason
+  end
+  return {
+    entry_index = candidate.entry_index,
+    route_id = candidate.route_id,
+    leg_index = candidate.leg_index,
+    reason = reason,
+    heading_reason = heading_reason,
+  }
+end
+
 local function validate(schedule_name)
   local route_book, load_error = load_route_book()
   if not route_book then
@@ -414,12 +516,40 @@ local function run(schedule_name, options)
     component
   )
 
+  local current_station_id = options.current_station_id
+  local start_entry_index = 1
+  local start_route_id = nil
+  local start_leg_index = nil
+  if not options.disable_start_picker then
+    local picked, pick_error = pick_schedule_start(route_book, schedule, remote, logger, current_station_id)
+    if not picked then
+      return nil, "schedule start picker failed: " .. tostring(pick_error)
+    end
+    start_entry_index = picked.entry_index or 1
+    start_route_id = picked.route_id
+    start_leg_index = picked.leg_index
+    emit_event(logger, "schedule_start_guardrail", {
+      schedule = schedule_name,
+      entry = start_entry_index,
+      route = start_route_id,
+      leg = start_leg_index,
+      reason = picked.reason,
+      heading = picked.heading_reason,
+    })
+  end
+
   local cycle = 0
   repeat
     cycle = cycle + 1
     emit_event(logger, "schedule_start", {schedule = schedule_name, cycle = cycle})
 
-    for index, entry in ipairs(schedule.entries or {}) do
+    local first_index = cycle == 1 and start_entry_index or 1
+    for index = first_index, #(schedule.entries or {}) do
+      local entry = schedule.entries[index]
+      local route_id, route_error = resolve_route_for_entry(route_book, current_station_id, entry)
+      if not route_id then
+        return nil, route_error
+      end
       local station_id, station_error = station_schedule.resolve_entry_station_id(route_book, entry)
       if not station_id then
         return nil, station_error
@@ -427,15 +557,18 @@ local function run(schedule_name, options)
       emit_event(logger, "schedule_entry_start", {
         schedule = schedule_name,
         entry = index,
-        route = entry.route,
+        route = route_id,
         station = station_id,
       })
 
-      local route_plan = train_controller.build_named_route_plan(entry.route, {
+      local route_plan = train_controller.build_named_route_plan(route_id, {
         profile_name = nil,
         profile_explicit = false,
         via_points = {},
       }, route_book)
+      if cycle == 1 and index == start_entry_index and route_id == start_route_id and start_leg_index then
+        route_plan.initial_leg_index = start_leg_index
+      end
       local ok, route_error = train_controller.execute_route_plan(remote, route_plan, logger)
       if not ok then
         io_controller:shutdown((route_book.STATIONS[station_id] or {}).redstone_outputs or {})
@@ -445,7 +578,7 @@ local function run(schedule_name, options)
       emit_event(logger, "schedule_entry_arrived", {
         schedule = schedule_name,
         entry = index,
-        route = entry.route,
+        route = route_id,
         station = station_id,
       })
 
@@ -484,6 +617,7 @@ local function run(schedule_name, options)
             entry = index,
             station = station_id,
           })
+          current_station_id = station_id
           wait_complete = true
         end
       end
@@ -551,6 +685,9 @@ local exports = {
   inspect = inspect,
   detectors = detectors,
   validate_route_book = validate_route_book,
+  resolve_route_for_entry = resolve_route_for_entry,
+  build_schedule_guardrail_candidates = build_schedule_guardrail_candidates,
+  pick_schedule_start = pick_schedule_start,
   _component_available = component_available,
   _get_primary_component = get_primary_component,
   _get_redstone_component = get_redstone_component,

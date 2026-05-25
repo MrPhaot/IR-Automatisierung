@@ -88,6 +88,8 @@ local DEFAULTS = {
   moving_away_sample_progress_floor_mps = 0.35,
   moving_away_distance_margin_m = 1.0,
   moving_away_speed_gate_mps = 0.25,
+  controller_speed_axis_rebase_alignment = 0.92,
+  pass_through_brake_suppress_margin_mps = 0.75,
 }
 
 local PROFILES = {
@@ -1068,6 +1070,75 @@ local function reverse_buffer_settle_block_reason(
   return nil
 end
 
+local function horizontal_axis(axis)
+  if not axis then
+    return nil
+  end
+  return normalize({x = axis.x, y = 0, z = axis.z})
+end
+
+local function forward_lateral(position, heading, point)
+  local offset = vector_sub(point, position)
+  offset.y = 0
+  local forward = vector_dot(offset, heading)
+  local lateral_signed = heading.x * offset.z - heading.z * offset.x
+  local distance = vector_length(offset)
+  return forward, lateral_signed, distance
+end
+
+local function straight_pair_tolerance(forward_m)
+  return math.max(1.75, math.min(3.0, 0.10 * math.max(forward_m or 0, 0)))
+end
+
+local function choose_forward_guardrail(candidates, position, heading)
+  heading = horizontal_axis(heading)
+  if not heading then
+    return nil, "missing_heading"
+  end
+
+  local forward = {}
+  for _, candidate in ipairs(candidates or {}) do
+    local s, l, d = forward_lateral(position, heading, candidate.point)
+    if s > 0.25 then
+      forward[#forward + 1] = {
+        candidate = candidate,
+        forward_m = s,
+        lateral_m = l,
+        distance_m = d,
+      }
+    end
+  end
+  table.sort(forward, function(a, b)
+    if math.abs(a.forward_m - b.forward_m) > 0.5 then
+      return a.forward_m < b.forward_m
+    end
+    return a.distance_m < b.distance_m
+  end)
+
+  if #forward == 0 then
+    return nil, "no_forward_candidate"
+  end
+  if #forward == 1 then
+    return forward[1].candidate, "single_forward_candidate"
+  end
+
+  local a = forward[1]
+  local b = forward[2]
+  local tol = straight_pair_tolerance(math.min(a.forward_m, b.forward_m))
+  local pair_lateral = (a.lateral_m + b.lateral_m) / 2
+
+  if math.abs(a.lateral_m) <= tol and math.abs(b.lateral_m) <= tol then
+    return (a.distance_m <= b.distance_m and a.candidate or b.candidate), "straight_pair_nearest"
+  end
+  if pair_lateral > tol then
+    return (a.distance_m >= b.distance_m and a.candidate or b.candidate), "left_curve_farther"
+  end
+  if pair_lateral < -tol then
+    return (a.distance_m <= b.distance_m and a.candidate or b.candidate), "right_curve_nearest"
+  end
+  return (a.distance_m <= b.distance_m and a.candidate or b.candidate), "mixed_pair_nearest"
+end
+
 local function terminal_stop_first_force_mode(state, speed_toward_target_mps, axis_speed_mps)
   if not (state and state.stop_first_active and not state.stopped_after_overshoot) then
     return nil, nil
@@ -1090,6 +1161,26 @@ local function terminal_buffer_settle_drive_limit(profile, buffer_settle_mode, b
     return profile.buffer_settle_reverse_throttle_limit
   end
   return nil
+end
+
+local function limit_pass_through_effort(leg_mode, force_mode, effort_cmd, speed_error_mps)
+  if leg_mode ~= "pass_through" then
+    return effort_cmd, false
+  end
+  if force_mode ~= "auto" then
+    return effort_cmd, false
+  end
+  if speed_error_mps >= DEFAULTS.pass_through_brake_suppress_margin_mps and effort_cmd < 0 then
+    return 0, true
+  end
+  return effort_cmd, false
+end
+
+local function moving_away_force_mode(current_force_mode, moving_away_brake_allowed)
+  if current_force_mode == "auto" and moving_away_brake_allowed then
+    return "full_brake", "moving_away_from_target"
+  end
+  return nil, nil
 end
 
 local function is_late_buffer_station_arrival(
@@ -1505,6 +1596,36 @@ local function apply_safe_stop(remote, brake)
   end
 end
 
+local function sample_heading(remote, fallback_axis, logger)
+  local p0, err = read_position(remote)
+  if not p0 then
+    return fallback_axis, "fallback_position_error:" .. tostring(err)
+  end
+
+  local ok = pcall(apply_controls, remote, {
+    throttle = 0.03,
+    reverser = 1,
+    brake = 0,
+    independent_brake = 0,
+  })
+  sleep_for(0.45)
+  pcall(apply_safe_stop, remote, DEFAULTS.hold_brake)
+
+  local p1 = select(1, read_position(remote))
+  if not ok or not p1 then
+    return fallback_axis, "fallback_probe_failed"
+  end
+
+  local measured = vector_sub(p1, p0)
+  measured.y = 0
+  local measured_axis = vector_length(measured) >= 0.20 and normalize(measured) or nil
+
+  if measured_axis and fallback_axis and abs_dot(measured_axis, fallback_axis) < 0.55 then
+    return measured_axis, "measured_over_fallback_conflict"
+  end
+  return measured_axis or fallback_axis, measured_axis and "measured" or "fallback"
+end
+
 local function abort_run(remote, logger, reason, distance_to_target_m, longitudinal_error_m, lateral_error_m, speed_toward_target_mps, axis_speed_mps)
   local stop_ok, stop_error = pcall(apply_safe_stop, remote, DEFAULTS.abort_brake)
   if not stop_ok then
@@ -1657,6 +1778,9 @@ local function begin_leg(runtime_context)
     d_term_active = "false",
     controller_speed_mps = 0,
     previous_controller_speed_mps = 0,
+    controller_speed_initialized = false,
+    controller_speed_axis = nil,
+    pass_through_brake_suppressed = false,
     previous_effort_cmd = 0,
     previous_force_mode = nil,
     terminal_stop_capture_speed_limit_mps = 0,
@@ -2626,8 +2750,8 @@ local function parse_cli_point(label, raw_point)
   }
 end
 
-local function normalize_route_waypoint(route_name, waypoint_index, value, stations)
-  local label = ("route %s waypoint %d"):format(route_name, waypoint_index)
+local function normalize_route_point(route_name, point_label, value, stations)
+  local label = ("route %s %s"):format(route_name, tostring(point_label))
   if type(value) == "string" then
     local station = stations[value]
     if not station then
@@ -2639,6 +2763,42 @@ local function normalize_route_waypoint(route_name, waypoint_index, value, stati
     error(("%s must be a station id or {x=..., y=..., z=...} table"):format(label))
   end
   return parse_cli_point(label, value)
+end
+
+local function normalize_route_waypoint(route_name, waypoint_index, value, stations)
+  return normalize_route_point(route_name, ("waypoint %s"):format(tostring(waypoint_index)), value, stations)
+end
+
+local function build_named_route_points(route_name, route, stations)
+  local has_edge_shape = route.from ~= nil or route.to ~= nil or route.via ~= nil
+  local points = {}
+
+  if has_edge_shape then
+    if type(route.from) ~= "string" then
+      error(("route %s with from/to/via must define from station id"):format(route_name))
+    end
+    if type(route.to) ~= "string" then
+      error(("route %s with from/to/via must define to station id"):format(route_name))
+    end
+    if route.via ~= nil and type(route.via) ~= "table" then
+      error(("route %s via must be a list when present"):format(route_name))
+    end
+
+    points[#points + 1] = normalize_route_point(route_name, "from", route.from, stations)
+    for index, waypoint in ipairs(route.via or {}) do
+      points[#points + 1] = normalize_route_point(route_name, ("via %d"):format(index), waypoint, stations)
+    end
+    points[#points + 1] = normalize_route_point(route_name, "to", route.to, stations)
+    return points
+  end
+
+  if type(route.waypoints) ~= "table" or #route.waypoints == 0 then
+    error(("route %s must define from/to/via or non-empty waypoints"):format(route_name))
+  end
+  for index, waypoint in ipairs(route.waypoints) do
+    points[#points + 1] = normalize_route_waypoint(route_name, index, waypoint, stations)
+  end
+  return points
 end
 
 local function route_book_path()
@@ -2659,8 +2819,11 @@ local function load_route_book()
     return nil, "route_book.lua must return a table"
   end
 
+  route_book_or_error.AUGMENTS = route_book_or_error.AUGMENTS or {}
+  route_book_or_error.AUGMENTS.DETECTORS = route_book_or_error.AUGMENTS.DETECTORS or {}
   route_book_or_error.STATIONS = route_book_or_error.STATIONS or {}
   route_book_or_error.ROUTES = route_book_or_error.ROUTES or {}
+  route_book_or_error.SCHEDULES = route_book_or_error.SCHEDULES or {}
   return route_book_or_error
 end
 
@@ -2685,7 +2848,7 @@ local function compute_terminal_stop_geometry(physical_target, stop_axis, stop_b
     normalized_axis
 end
 
-local function build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m, profile_name)
+local function build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m, profile_name, initial_leg_index)
   if type(waypoints) ~= "table" or #waypoints == 0 then
     error(("route %s has no waypoints"):format(route_name))
   end
@@ -2723,6 +2886,7 @@ local function build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m
     stop_buffer_m = stop_buffer_m,
     profile_name = profile_name,
     legs = legs,
+    initial_leg_index = initial_leg_index or 1,
   }
 end
 
@@ -2765,14 +2929,7 @@ local function build_named_route_plan(route_name, cli, route_book)
     error("unknown route: " .. tostring(route_name))
   end
 
-  if type(route.waypoints) ~= "table" or #route.waypoints == 0 then
-    error(("route %s must define at least one waypoint"):format(route_name))
-  end
-
-  local waypoints = {}
-  for index, waypoint in ipairs(route.waypoints) do
-    waypoints[#waypoints + 1] = normalize_route_waypoint(route_name, index, waypoint, stations)
-  end
+  local waypoints = build_named_route_points(route_name, route, stations)
 
   local cruise_kmh = route.cruise_kmh and parse_number(("route %s cruise_kmh"):format(route_name), route.cruise_kmh)
     or DEFAULTS.cruise_kmh
@@ -2782,7 +2939,7 @@ local function build_named_route_plan(route_name, cli, route_book)
     or route.profile
     or DEFAULTS.profile
 
-  return build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m, get_profile(profile_name).name)
+  return build_route_plan(route_name, waypoints, cruise_kmh, stop_buffer_m, get_profile(profile_name).name, route.initial_leg_index)
 end
 
 local function run_route_leg(remote, route_plan, leg, runtime_context, leg_transition_reason, logger)
@@ -3466,13 +3623,27 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     buffer_settle_active = buffer_settle_mode ~= "none"
     buffer_settle_reason = buffer_settle_active and (buffer_settle_mode .. "_settle") or buffer_settle_block_reason
 
-    state.previous_controller_speed_mps = state.controller_speed_mps
-    state.controller_speed_mps = ema(
-      state.controller_speed_mps,
-      speed_toward_target_mps,
-      DEFAULTS.speed_filter_memory_s,
-      dt_s
-    ) or speed_toward_target_mps
+    local rebase_controller_speed = false
+    if not state.controller_speed_initialized then
+      rebase_controller_speed = true
+    elseif state.controller_speed_axis and abs_dot(state.controller_speed_axis, motion_axis) < DEFAULTS.controller_speed_axis_rebase_alignment then
+      rebase_controller_speed = true
+    end
+
+    if rebase_controller_speed then
+      state.controller_speed_mps = speed_toward_target_mps
+      state.previous_controller_speed_mps = speed_toward_target_mps
+      state.controller_speed_initialized = true
+    else
+      state.previous_controller_speed_mps = state.controller_speed_mps
+      state.controller_speed_mps = ema(
+        state.controller_speed_mps,
+        speed_toward_target_mps,
+        DEFAULTS.speed_filter_memory_s,
+        dt_s
+      ) or speed_toward_target_mps
+    end
+    state.controller_speed_axis = motion_axis
 
     local speed_limit_mps = target_speed_mps
     local committed_stop = leg.mode == "terminal"
@@ -3653,6 +3824,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
     local allocated_throttle = 0
     local allocated_brake = 0
     state.d_term_active = "false"
+    state.pass_through_brake_suppressed = false
     local control
     if hold then
       runtime_context.settled_since = runtime_context.settled_since or now
@@ -3804,6 +3976,17 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         state.phase = "tracking"
       end
 
+      local moving_away_force, moving_away_reason = moving_away_force_mode(
+        speed_plan_force_mode,
+        moving_away_brake_allowed
+      )
+      if moving_away_force then
+        speed_plan_force_mode = moving_away_force
+        speed_plan_desired_reverser = state.active_reverser
+        planner_reason = moving_away_reason
+        state.phase = "tracking"
+      end
+
       local stop_first_force_mode, stop_first_reason = terminal_stop_first_force_mode(
         state,
         speed_toward_target_mps,
@@ -3922,6 +4105,12 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         if settle_drive_limit and effort_cmd > settle_drive_limit then
           effort_cmd = settle_drive_limit
         end
+        effort_cmd, state.pass_through_brake_suppressed = limit_pass_through_effort(
+          leg.mode,
+          speed_plan.force_mode,
+          effort_cmd,
+          speed_error
+        )
         local previous_sign = effort_sign(state.previous_effort_cmd)
         local current_sign = effort_sign(effort_cmd)
         if previous_sign ~= 0 and current_sign ~= 0 and previous_sign ~= current_sign then
@@ -4008,7 +4197,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         and "pass_through"
         or (stop_context.in_no_reverse_approach and "no_reverse_approach" or "normal")
       emit_line(logger, (
-        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s stop_guidance_entry_margin_m=%.2fm stop_guidance_required_stop_m=%.2fm terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s speed_plan_limit_mps=%.2f speed_plan_command_mps=%.2f speed_plan_target_mps=%.2f speed_plan_force_mode=%s terminal_speed_commit_active=%s d_term_active=%s effort_cmd=%.3f allocated_throttle=%.2f allocated_brake=%.2f overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
+        "mode=%s phase=%s reason=%s profile=%s guidance_mode=%s moving_away_reference=%s final_profile_mode=%s distance=%.2fm physical_distance=%.2fm physical_distance_minus_buffer=%.2fm physical_buffer_error=%.2fm longitudinal=%.2fm lateral=%.2fm physical_longitudinal=%.2fm physical_lateral=%.2fm stop_longitudinal=%.2fm stop_lateral=%.2fm physical_longitudinal_route=%.2fm physical_lateral_route=%.2fm target_axis=(%.3f,%.3f,%.3f) motion_axis=(%.3f,%.3f,%.3f) stop_axis=(%.3f,%.3f,%.3f) terminal_route_axis=(%.3f,%.3f,%.3f) axis_source=%s alignment_to_target=%.3f distance_delta=%.2fm progress_speed=%.2fm/s stop_distance_delta=%.2fm stop_progress_speed=%.2fm/s stop_progress_initialized=%s moving_away_confidence=%.2f startup_guard_active=%s curve_guard_active=%s required_stop=%.2fm stop_buffer_m=%.2fm terminal_brake_snapshot=%.3f terminal_stop_capture_speed_limit=%.2fm/s terminal_buffer_target_speed=%.2fm/s terminal_buffer_speed_cap=%.2fm/s terminal_buffer_throttle_limit=%.3f terminal_buffer_brake_active=%s terminal_buffer_brake_reason=%s buffer_settle_active=%s buffer_settle_mode=%s buffer_settle_eligible=%s buffer_settle_block_reason=%s buffer_settle_reason=%s buffer_success_tolerance=%.2fm stop_guidance_ready=%s stop_guidance_block_reason=%s stop_guidance_entry_margin_m=%.2fm stop_guidance_required_stop_m=%.2fm terminal_success_stop_ok=%s terminal_success_physical_ok=%s terminal_success_consistent=%s approach_stop=%s no_reverse_approach=%s final_forward_crawl=%s terminal_recovery_active=%s terminal_recovery_eligible=%s terminal_recovery_block_reason=%s terminal_failure_pending=%s terminal_failure_elapsed_s=%.2f terminal_deadlock_candidate_elapsed_s=%.2f terminal_deadlock_recovery_active=%s stop_first=%s near_target_correction=%s near_target_resolution=%s stop_guidance_entry=%s stop_guidance_entry_reason=%s stop_guidance_entry_physical_distance=%.2fm stop_guidance_entry_stop_longitudinal=%.2fm late_stop_capture=%s speed_toward_target=%.2fm/s axis_speed=%.2fm/s motion_axis_speed=%.2fm/s cap=%.2fm/s speed_plan_limit_mps=%.2f speed_plan_command_mps=%.2f speed_plan_target_mps=%.2f speed_plan_force_mode=%s terminal_speed_commit_active=%s d_term_active=%s pass_through_brake_suppressed=%s effort_cmd=%.3f allocated_throttle=%.2f allocated_brake=%.2f overspeed=%.2fm/s desired_reverser=%d switching_reverser=%s reverser=%d throttle=%.2f brake=%.2f brake_model=%.3f route_name=%s leg=%d/%d leg_mode=%s physical_target=%s terminal_stop_target=%s leg_transition_reason=%s\n"
       ):format(
         state.mode,
         state.phase,
@@ -4101,6 +4290,7 @@ local function run_route_leg(remote, route_plan, leg, runtime_context, leg_trans
         speed_plan.force_mode,
         tostring(state.terminal_speed_commit_active),
         state.d_term_active,
+        tostring(state.pass_through_brake_suppressed),
         effort_cmd,
         allocated_throttle,
         allocated_brake,
@@ -4151,6 +4341,7 @@ local function execute_route_plan(remote, route_plan, logger)
     return nil, runtime_error
   end
 
+  local start_index = math.max(1, math.min(route_plan.initial_leg_index or 1, #route_plan.legs))
   ensure_ignition(remote)
   emit_line(logger, ("route_start route_name=%s legs=%d cruise_kmh=%s stop_buffer_m=%s profile=%s first_target=%s"):format(
     route_plan.name,
@@ -4158,11 +4349,12 @@ local function execute_route_plan(remote, route_plan, logger)
     route_plan.cruise_kmh,
     route_plan.stop_buffer_m,
     route_plan.profile_name,
-    format_point(route_plan.legs[1].target)
+    format_point(route_plan.legs[start_index].target)
   ))
 
   local leg_transition_reason = "route_start"
-  for _, leg in ipairs(route_plan.legs) do
+  for index = start_index, #route_plan.legs do
+    local leg = route_plan.legs[index]
     local status, detail = run_route_leg(remote, route_plan, leg, runtime_context, leg_transition_reason, logger)
     if status == nil then
       return nil, detail
@@ -4318,6 +4510,8 @@ local exports = {
   compute_longitudinal_effort = compute_longitudinal_effort,
   allocate_effort_to_controls = allocate_effort_to_controls,
   limit_effort_for_phase = limit_effort_for_phase,
+  limit_pass_through_effort = limit_pass_through_effort,
+  moving_away_force_mode = moving_away_force_mode,
   slew_limit_effort = slew_limit_effort,
   terminal_buffer_progress_floor = terminal_buffer_progress_floor,
   terminal_buffer_required_stop_distance_m = terminal_buffer_required_stop_distance_m,
@@ -4329,6 +4523,11 @@ local exports = {
   terminal_stop_first_force_mode = terminal_stop_first_force_mode,
   terminal_buffer_settle_drive_limit = terminal_buffer_settle_drive_limit,
   is_late_buffer_station_arrival = is_late_buffer_station_arrival,
+  horizontal_axis = horizontal_axis,
+  forward_lateral = forward_lateral,
+  straight_pair_tolerance = straight_pair_tolerance,
+  choose_forward_guardrail = choose_forward_guardrail,
+  sample_heading = sample_heading,
   terminal_failure_arming_allowed = terminal_failure_arming_allowed,
   should_enter_stop_guidance = should_enter_stop_guidance,
 }
