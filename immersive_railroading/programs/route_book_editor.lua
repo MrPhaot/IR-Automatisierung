@@ -85,7 +85,6 @@ local SCHEDULE_CONDITION_TYPES = {
 }
 local SCHEDULE_COMPARATORS = {"<", "<=", ">", ">=", "=="}
 local SCHEDULE_REDSTONE_MODES = {"while_pending", "on_departure_pulse"}
-local SCHEDULE_SCOPE_BASE_OPTIONS = {"station_any_detector", "station_all_detectors"}
 local BOOLEAN_OPTIONS = {"false", "true"}
 local REDSTONE_SIDE_OPTIONS = {"north", "south", "east", "west", "top", "bottom", "front", "back", "left", "right"}
 
@@ -383,8 +382,24 @@ local function make_repeatable_group_field(spec)
   }
 end
 
+-- Editor-internal scope stays a string (the chain field holds this output); the
+-- persisted schedule stores a table. The table form carries an explicit station id
+-- so the picker no longer needs the old single-string station_any/all choices.
 local function scope_to_editor_text(scope)
-  if scope == "station_any_detector" or scope == "station_all_detectors" then
+  if type(scope) == "table" and type(scope.station_id) == "string" then
+    if scope.all_detectors then
+      return ("station:%s:all"):format(scope.station_id)
+    end
+    if type(scope.detector_ids) == "table" then
+      local ids = {}
+      for _, d in ipairs(scope.detector_ids) do
+        ids[#ids + 1] = d
+      end
+      table.sort(ids)
+      return ("station:%s:detectors:%s"):format(scope.station_id, table.concat(ids, ","))
+    end
+  end
+  if scope == "station_all_detectors" or scope == "station_any_detector" then
     return scope
   end
   if type(scope) == "table" and type(scope.detector_id) == "string" then
@@ -393,18 +408,33 @@ local function scope_to_editor_text(scope)
   return "station_any_detector"
 end
 
-local function scope_from_editor_text(text)
+local function scope_from_editor_text(text, fallback_station_id)
   text = trim(text)
-  if text == "station_all_detectors" then
-    return text
+  local sid, kind, rest = text:match("^station:([^:]+):([^:]+):(.*)$")
+  if sid and sid ~= "" and (kind == "all" or kind == "detectors") then
+    if kind == "all" then
+      return {station_id = sid, all_detectors = true}
+    end
+    local ids = {}
+    for id in (rest or ""):gmatch("([^,]+)") do
+      local t = trim(id)
+      if t ~= "" then
+        ids[#ids + 1] = t
+      end
+    end
+    table.sort(ids)
+    return {station_id = sid, detector_ids = ids}
+  end
+  if text == "station_all_detectors" or text == "station_any_detector" then
+    return {station_id = fallback_station_id, all_detectors = true}
   end
   if text:match("^detector:") then
-    local detector_id = trim(text:sub(#"detector:" + 1))
-    if detector_id ~= "" then
-      return {detector_id = detector_id}
+    local d = trim(text:sub(#"detector:" + 1))
+    if d ~= "" then
+      return {detector_id = d}
     end
   end
-  return "station_any_detector"
+  return {station_id = fallback_station_id, all_detectors = true}
 end
 
 local route_destination_station_id
@@ -1319,9 +1349,9 @@ local function first_redstone_rules_field(modal)
 end
 
 -- The schedule modal has no standalone "route" field; entries are stored as
--- "station | route" text rows (see collect_schedule_entry_refs). Redstone rule
--- outputs and wait-condition scopes both belong to the schedule's first entry,
--- so the destination station must be read from that row, not a missing field.
+-- "station | route" text rows (see collect_schedule_entry_refs). The editor only
+-- writes entry 1's wait/redstone on save, but the offered options span every entry
+-- station via schedule_entry_station_ids so all stations stay editable in one place.
 local function modal_first_entry_ref(modal)
   for _, field in ipairs(modal and modal.fields or {}) do
     if field.key == "entries" then
@@ -1357,39 +1387,64 @@ local function modal_destination_station_id(book, modal)
   return entry_destination_station_id(book, ref.station, ref.route)
 end
 
+-- Every entry station that the modal's live `entries` field currently resolves to,
+-- de-duplicated and stable by first appearance. Used to build the union of redstone
+-- outputs and the scope station list while the edit is still in progress.
+local function schedule_entry_station_ids(book, modal)
+  local ids = {}
+  local seen = {}
+  if type(modal) == "table" then
+    for _, field in ipairs(modal.fields or {}) do
+      if field.key == "entries" then
+        for _, item in ipairs(field.items or {}) do
+          local refs = collect_schedule_entry_refs({entries = {item.value}})
+          for _, ref in ipairs(refs) do
+            local station_id = entry_destination_station_id(book, ref.station, ref.route)
+            if station_id and not seen[station_id] then
+              seen[station_id] = true
+              ids[#ids + 1] = station_id
+            end
+          end
+        end
+        break
+      end
+    end
+  end
+  return ids
+end
+
 local function available_redstone_ids_for_station(book, station_id)
   local station = station_id and book and book.STATIONS and book.STATIONS[station_id] or nil
   return sorted_keys(station and station.redstone_outputs or {})
 end
 
-local function available_scope_options_for_station(book, station_id, current_scope)
-  local options = {
-    SCHEDULE_SCOPE_BASE_OPTIONS[1],
-    SCHEDULE_SCOPE_BASE_OPTIONS[2],
-  }
-  local station = station_id and book and book.STATIONS and book.STATIONS[station_id] or nil
-  for _, detector_id in ipairs(station and station.detector_ids or {}) do
-    options[#options + 1] = "detector:" .. tostring(detector_id)
-  end
-  local current = trim(scope_to_editor_text(current_scope))
-  if current ~= "" then
-    local found = false
-    for _, option in ipairs(options) do
-      if option == current then
-        found = true
-        break
+-- Merge + sort + de-dup the redstone output names across the given stations.
+-- Used by the schedule redstone-rule output picker so one entry's outputs are
+-- selectable even though the editor only writes entry 1's rules on save.
+local function available_redstone_ids_for_schedule(book, station_ids)
+  local seen = {}
+  local merged = {}
+  for _, station_id in ipairs(station_ids or {}) do
+    local station = book and book.STATIONS and book.STATIONS[station_id]
+    if type(station) == "table" then
+      for _, output_id in ipairs(sorted_keys(station.redstone_outputs or {})) do
+        if not seen[output_id] then
+          seen[output_id] = true
+          merged[#merged + 1] = output_id
+        end
       end
     end
-    if not found then
-      options[#options + 1] = current
-    end
   end
-  return options
+  table.sort(merged)
+  return merged
 end
 
 local function refresh_rule_output_options(modal, field)
-  local station_id = modal_destination_station_id(field and field.book or nil, modal)
-  local options = available_redstone_ids_for_station(field and field.book or nil, station_id)
+  local station_ids = schedule_entry_station_ids(field and field.book or nil, modal)
+  local options = available_redstone_ids_for_schedule(field and field.book or nil, station_ids)
+  if #options == 0 then
+    options = available_redstone_ids_for_station(field and field.book or nil, modal_destination_station_id(field and field.book or nil, modal))
+  end
   local seen_current = false
   for _, option in ipairs(options) do
     if option == tostring(field.output.value or "") then
@@ -1440,17 +1495,30 @@ local function build_chain_chooser_rows(field_index, field)
   if not chooser then
     return rows
   end
+  local section_label = ({
+    operator = "Choose Join",
+    condition_type = "Choose Condition",
+    existing_condition_type = "Choose Condition",
+    comparator = "Choose Comparator",
+  })[chooser.kind]
+  if chooser.kind == "scope" then
+    section_label = chooser.stage == "detectors" and "Choose Detectors" or "Choose Scope Station"
+  end
   rows[#rows + 1] = {
     kind = "section",
-    label = ({
-      operator = "Choose Join",
-      condition_type = "Choose Condition",
-      existing_condition_type = "Choose Condition",
-      comparator = "Choose Comparator",
-      scope = "Choose Scope",
-    })[chooser.kind] or "Choose Option",
+    label = section_label or "Choose Option",
   }
   for option_index, option in ipairs(chooser.options or {}) do
+    local checked
+    if chooser.kind == "scope" and chooser.stage == "detectors" then
+      if option == "(all detectors)" then
+        checked = chooser.all_selected
+      elseif option == "(done)" then
+        checked = nil
+      else
+        checked = chooser.selected_detectors and chooser.selected_detectors[option] == true or false
+      end
+    end
     rows[#rows + 1] = {
       kind = "chain_chooser",
       field_index = field_index,
@@ -1458,6 +1526,7 @@ local function build_chain_chooser_rows(field_index, field)
       chooser = chooser,
       option_index = option_index,
       option = option,
+      checked = checked,
     }
   end
   return rows
@@ -1994,16 +2063,28 @@ local function begin_existing_comparator_chooser(field)
   return true
 end
 
+local function merge_all_detectors_and_done(detector_options)
+  local options = {"(all detectors)"}
+  for _, detector_id in ipairs(detector_options or {}) do
+    options[#options + 1] = detector_id
+  end
+  options[#options + 1] = "(done)"
+  return options
+end
+
 local function begin_scope_chooser(state, field)
   local condition = selected_chain_condition(field)
   if not condition then
     return false
   end
-  local station_id = modal_destination_station_id(state.book, state.modal)
-  local options = available_scope_options_for_station(state.book, station_id, condition.scope)
+  local station_ids = schedule_entry_station_ids(state.book, state.modal)
+  if #station_ids == 0 then
+    return false
+  end
+  local current = scope_from_editor_text(condition.scope)
   local selected = 1
-  for index, option in ipairs(options) do
-    if option == tostring(condition.scope or "station_any_detector") then
+  for index, station_id in ipairs(station_ids) do
+    if station_id == current.station_id then
       selected = index
       break
     end
@@ -2014,7 +2095,11 @@ local function begin_scope_chooser(state, field)
       group_index = field.selected_group_index,
       condition_index = field.selected_condition_index,
     },
-    options = options,
+    stage = "station",
+    station_id = nil,
+    selected_detectors = {},
+    all_selected = false,
+    options = station_ids,
     selected = selected,
   }
   return true
@@ -2112,11 +2197,78 @@ local function choose_chain_option(state, row)
     if not condition then
       return false
     end
-    condition.scope = tostring(option or "station_any_detector")
-    field.selected_group_index = chooser.condition_ref.group_index
-    field.selected_condition_index = chooser.condition_ref.condition_index
-    field.chooser = nil
-    return true
+    if chooser.stage == "station" then
+      local station_id = chooser.options[chooser.selected]
+      if not station_id then
+        return false
+      end
+      local current = scope_from_editor_text(condition.scope)
+      local selected_detectors = {}
+      local all_selected = false
+      if current.station_id == station_id and type(current.detector_ids) == "table" then
+        for _, d in ipairs(current.detector_ids) do
+          selected_detectors[d] = true
+        end
+      elseif current.station_id == station_id and current.all_detectors == true then
+        all_selected = true
+      end
+      local station = state.book and state.book.STATIONS and state.book.STATIONS[station_id]
+      local detector_options = {}
+      for _, detector_id in ipairs(station and station.detector_ids or {}) do
+        detector_options[#detector_options + 1] = detector_id
+      end
+      table.sort(detector_options)
+      chooser.station_id = station_id
+      chooser.selected_detectors = selected_detectors
+      chooser.all_selected = all_selected
+      chooser.options = merge_all_detectors_and_done(detector_options)
+      chooser.stage = "detectors"
+      chooser.selected = 1
+      return true
+    end
+
+    if chooser.stage == "detectors" then
+      if chooser.selected == #chooser.options then
+        local text
+        if chooser.all_selected then
+          text = ("station:%s:all"):format(chooser.station_id)
+        else
+          local ids = {}
+          for id in pairs(chooser.selected_detectors or {}) do
+            ids[#ids + 1] = id
+          end
+          table.sort(ids)
+          text = ("station:%s:detectors:%s"):format(chooser.station_id, table.concat(ids, ","))
+        end
+        condition.scope = text
+        field.selected_group_index = chooser.condition_ref.group_index
+        field.selected_condition_index = chooser.condition_ref.condition_index
+        field.chooser = nil
+        return true
+      end
+
+      if chooser.selected == 1 then
+        chooser.all_selected = not chooser.all_selected
+        if chooser.all_selected then
+          chooser.selected_detectors = {}
+        end
+        return true
+      end
+
+      local detector_id = chooser.options[chooser.selected]
+      if detector_id == "(all detectors)" or detector_id == "(done)" then
+        return true
+      end
+      if chooser.selected_detectors[detector_id] then
+        chooser.selected_detectors[detector_id] = nil
+      else
+        chooser.selected_detectors[detector_id] = true
+      end
+      chooser.all_selected = false
+      return true
+    end
+
+    return false
   end
 
   return false
@@ -2353,7 +2505,14 @@ local function render_modal(buffer, targets, layout, modal)
       elseif row.kind == "chain_condition_detail" then
         render_text(buffer, x + 2, row_y, prefix .. chain_detail_visible_value(row, width - 6, is_active), width - 6)
       elseif row.kind == "chain_chooser" then
-        local marker = row.disabled and " - " or ((row.option_index or 0) == (row.chooser.selected or 0) and "[x]" or "[ ]")
+        local marker
+        if row.disabled then
+          marker = " - "
+        elseif row.checked ~= nil then
+          marker = row.checked and "[x]" or "[ ]"
+        else
+          marker = ((row.option_index or 0) == (row.chooser.selected or 0) and "[x]" or "[ ]")
+        end
         render_text(buffer, x + 2, row_y, prefix .. marker .. " " .. tostring(row.option or ""), width - 4)
         if not row.disabled then
           local chooser_target = {
@@ -3001,7 +3160,7 @@ local function build_screen(state, width, height)
     save_lines[#save_lines + 1] = "Click [+] to add a condition, then choose AND or OR before the next one."
     save_lines[#save_lines + 1] = "Comparator-based conditions open a comparator chooser before returning."
     save_lines[#save_lines + 1] = "Wait controls departure. Redstone rules are separate."
-    save_lines[#save_lines + 1] = "Redstone rule outputs come from the route destination station I/Os."
+    save_lines[#save_lines + 1] = "Redstone rule outputs come from every entry station's I/Os."
     for index = 1, math.min(#runtime_info.condition_refs, 3) do
       local item = runtime_info.condition_refs[index]
       save_lines[#save_lines + 1] = ("uses redstone: %s entry %d -> %s (%s)"):format(
@@ -4287,7 +4446,8 @@ local exports = {
   available_redstone_ids_for_route_destination = available_redstone_ids_for_route_destination,
   modal_destination_station_id = modal_destination_station_id,
   available_redstone_ids_for_station = available_redstone_ids_for_station,
-  available_scope_options_for_station = available_scope_options_for_station,
+  available_redstone_ids_for_schedule = available_redstone_ids_for_schedule,
+  schedule_entry_station_ids = schedule_entry_station_ids,
   runtime_condition_from_editor = runtime_condition_from_editor,
   runtime_groups_from_chain = runtime_groups_from_chain,
   runtime_redstone_rules_from_chain = runtime_redstone_rules_from_editor,

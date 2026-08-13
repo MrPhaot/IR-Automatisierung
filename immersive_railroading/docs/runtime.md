@@ -1,10 +1,17 @@
 # Runtime Notes
 
 ## Confirmed Components
-- `component.ir_remote_control`
+- `component.ir_remote_control` — the Radio Control Card (`thirdparty/opencomputers/RadioCtrlCardDriver`)
 - `component.ir_augment_detector`
 - `component.ir_augment_control`
 - `component.redstone`
+
+Note: the in-game augment configuration UI is the `AugmentFilterGUI`. Its model is a
+tag/predicate filter with the fields `positiveFilter`, `negativeFilter`, `doorActuatorFilter`,
+`stockDetectorMode`, `locoControlMode`, `redstoneMode`, `pushpull`, and `couplerAugmentMode`.
+Tags surface through augment `getTag`/`setTag` plus the filter fields `includeTags`/`excludeTags`
+(not a stock-config `tags` key). OpenComputers augments confirmed in the bundled wiki are
+`ir_augment_detector` and `ir_augment_control`.
 
 ## Confirmed Remote-Control Methods
 - `info()`
@@ -19,12 +26,23 @@
 - tag, horn, bell helpers
 
 ## Confirmed Augment Notes From Local Jar
-The bundled wiki text in `ImmersiveRailroading-1.7.10-forge-1.10.0.jar` documents:
+## Baseline
+
+This project targets **Minecraft 1.7.10** with **Immersive Railroading 1.11.0** (GTNH port
+jar `ImmersiveRailroading-1.7.10-forge-1.11.0.jar`). The GitHub `TeamOpenIndustry/ImmersiveRailroading`
+changelog describes a different MC line (1.17+) and does **not** apply here; do not copy its
+feature list (transfer table, TABLE part, MC 1.17+ support, `power_w`/`tractive_effort_kn` config keys).
+
+## Confirmed Augment Notes From Local Jar
+
+The bundled wiki text in `ImmersiveRailroading-1.7.10-forge-1.11.0.jar` documents:
 - `ir_augment_detector`
 - `ir_augment_control`
 - event `ir_train_overhead`
+- the in-game `AugmentFilterGUI` (tag/predicate filters: includeTags/excludeTags, positiveFilter/
+  negativeFilter, stockDetectorMode, locoControlMode, redstoneMode, pushpull, couplerAugmentMode)
 
-It does not document the remote-control card payload returned by `info()`.
+It does not document the remote-control card payload returned by `info()`; verify in-game.
 
 ## Confirmed Schedule V1 Detector Facts
 - detector `CommonAPI.info()` exposes wagon-related wait metrics used by V1:

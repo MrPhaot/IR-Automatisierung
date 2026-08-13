@@ -100,7 +100,7 @@ function M.resolve_entry_station_id(route_book, entry)
   return station_id
 end
 
-function M.validate_condition(route_book, station_id, condition)
+function M.validate_condition(route_book, station_id, condition, allowed_outputs)
   local errors = {}
   if type(condition) ~= "table" then
     errors[#errors + 1] = "condition must be a table"
@@ -119,8 +119,27 @@ function M.validate_condition(route_book, station_id, condition)
       errors[#errors + 1] = ("%s requires numeric value"):format(condition.type)
     end
     local scope = condition.scope
-    if scope ~= "station_any_detector" and scope ~= "station_all_detectors" and not (type(scope) == "table" and type(scope.detector_id) == "string") then
-      errors[#errors + 1] = ("%s requires station_any_detector, station_all_detectors, or { detector_id = ... } scope"):format(condition.type)
+    local scope_ok = false
+    if scope == "station_any_detector" or scope == "station_all_detectors" then
+      scope_ok = true
+    elseif type(scope) == "table" then
+      if scope.all_detectors == true then
+        scope_ok = true
+      elseif type(scope.detector_ids) == "table" then
+        scope_ok = true
+        for _, d in ipairs(scope.detector_ids) do
+          if type(d) ~= "string" then
+            scope_ok = false
+            break
+          end
+        end
+      elseif type(scope.detector_id) == "string" then
+        scope_ok = true
+      end
+    end
+    if not scope_ok then
+      errors[#errors + 1] = ("%s requires station_any_detector, station_all_detectors, "
+        .. "{station_id, all_detectors=true}, {station_id, detector_ids={...}}, or {detector_id=...} scope"):format(condition.type)
     end
   else
     errors[#errors + 1] = ("unsupported wait condition type %s"):format(tostring(condition.type))
@@ -133,9 +152,14 @@ function M.validate_condition(route_book, station_id, condition)
       if type(condition.redstone.output) ~= "string" then
         errors[#errors + 1] = "redstone.output must be a string"
       else
-        local station = route_book.STATIONS[station_id]
-        local outputs = station and station.redstone_outputs or {}
-        if not outputs[condition.redstone.output] then
+        local known = false
+        if allowed_outputs then
+          known = allowed_outputs[condition.redstone.output] == true
+        else
+          local station = route_book.STATIONS[station_id]
+          known = (station and station.redstone_outputs and station.redstone_outputs[condition.redstone.output]) ~= nil
+        end
+        if not known then
           errors[#errors + 1] = ("station %s does not define redstone output %s"):format(
             tostring(station_id),
             condition.redstone.output
@@ -173,6 +197,16 @@ function M.validate(route_book, schedule_name)
     else
       if type(schedule.entries) ~= "table" or #schedule.entries == 0 then
         warnings[#warnings + 1] = ("schedule %s has no entries"):format(name)
+      end
+      local allowed_outputs = {}
+      for _, entry in ipairs(schedule.entries or {}) do
+        local sid = M.resolve_entry_station_id(route_book, entry)
+        local station = sid and route_book.STATIONS[sid]
+        if station then
+          for output_name in pairs(station.redstone_outputs or {}) do
+            allowed_outputs[output_name] = true
+          end
+        end
       end
       for index, entry in ipairs(schedule.entries or {}) do
         if type(entry.station) == "string" and not route_book.STATIONS[entry.station] then
@@ -213,7 +247,7 @@ function M.validate(route_book, schedule_name)
                   errors[#errors + 1] = ("schedule %s entry %d wait group %d must contain conditions"):format(name, index, group_index)
                 else
                   for condition_index, condition in ipairs(group) do
-                    for _, message in ipairs(M.validate_condition(route_book, station_id, condition)) do
+                    for _, message in ipairs(M.validate_condition(route_book, station_id, condition, allowed_outputs)) do
                       errors[#errors + 1] = ("schedule %s entry %d group %d condition %d: %s"):format(
                         name,
                         index,
@@ -238,7 +272,9 @@ function M.validate(route_book, schedule_name)
                   else
                     local station = route_book.STATIONS[station_id]
                     local outputs = station and station.redstone_outputs or {}
-                    if not outputs[rule.output] then
+                    local known = outputs[rule.output] ~= nil
+                      or (allowed_outputs and allowed_outputs[rule.output] == true)
+                    if not known then
                       errors[#errors + 1] = ("schedule %s entry %d redstone rule %d references unknown station output %s"):format(
                         name,
                         index,
@@ -265,7 +301,7 @@ function M.validate(route_book, schedule_name)
                             plain_condition[key] = value
                           end
                           plain_condition.redstone = nil
-                          for _, message in ipairs(M.validate_condition(route_book, station_id, plain_condition)) do
+                          for _, message in ipairs(M.validate_condition(route_book, station_id, plain_condition, allowed_outputs)) do
                             errors[#errors + 1] = ("schedule %s entry %d redstone rule %d group %d condition %d: %s"):format(
                               name,
                               index,
@@ -295,12 +331,22 @@ function M.validate(route_book, schedule_name)
   }
 end
 
-local function resolve_detector_ids(station, condition)
-  if condition.scope == "station_any_detector" or condition.scope == "station_all_detectors" then
-    return station.detector_ids or {}
+local function resolve_detector_ids(route_book, station, condition)
+  local scope = condition.scope
+  if type(scope) == "table" and type(scope.station_id) == "string" then
+    local st = route_book and route_book.STATIONS and route_book.STATIONS[scope.station_id]
+    if scope.all_detectors then
+      return st and st.detector_ids or {}
+    end
+    if type(scope.detector_ids) == "table" then
+      return scope.detector_ids
+    end
   end
-  if type(condition.scope) == "table" and type(condition.scope.detector_id) == "string" then
-    return {condition.scope.detector_id}
+  if type(scope) == "table" and type(scope.detector_id) == "string" then
+    return {scope.detector_id}
+  end
+  if station then
+    return station.detector_ids or {}
   end
   return {}
 end
@@ -335,7 +381,7 @@ local function evaluate_condition(session, condition, detector_snapshots, now)
   elseif condition.type == "inactivity" then
     complete = (now - session.last_activity_at) >= condition.seconds
   else
-    local detector_ids = resolve_detector_ids(session.station, condition)
+    local detector_ids = resolve_detector_ids(session.route_book, session.station, condition)
     local samples = {}
     for _, detector_id in ipairs(detector_ids) do
       local sample = detector_snapshots[detector_id]
@@ -355,7 +401,9 @@ local function evaluate_condition(session, condition, detector_snapshots, now)
     end
 
     if #samples > 0 then
-      if condition.scope == "station_all_detectors" then
+      local and_mode = (condition.scope == "station_all_detectors")
+        or (type(condition.scope) == "table" and condition.scope.all_detectors == true)
+      if and_mode then
         complete = true
         for _, info in ipairs(samples) do
           if not compare(metric_from_info(condition, info) or 0, condition.comparator, condition.value) then

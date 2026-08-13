@@ -37,10 +37,18 @@ Supported condition types:
 - `fluid_percent`
 - `cargo_percent`
 
-Detector scopes:
-- `station_any_detector`
-- `station_all_detectors`
-- `{ detector_id = "..." }`
+Detector scopes (per-station, chosen via the editor's two-stage Scope picker):
+- All detectors of a station: `{station_id = "<id>", all_detectors = true}`
+- Explicit detector set: `{station_id = "<id>", detector_ids = {"d1", "d2"}}` (sorted, unique; empty set = none selected)
+
+Legacy forms are read-compat and never written by the editor:
+- `"station_all_detectors"` / `"station_any_detector"`
+- `{detector_id = "..."}`
+
+Scope station resolution uses the schedule's entry stations (union of every entry's station,
+resolved from `entry.station` or the route terminal `route.to`; `via` is excluded). A scope
+referencing a station not currently among the entries still resolves at runtime via the active
+station, so a missing `station_id` (from legacy-normalized scopes) is valid.
 
 Wagon-related metrics come from `ir_augment_detector.info()` only.
 V1 does not use `ir_remote_control.consist()` for wagon waits.
@@ -60,6 +68,12 @@ Allowed condition modes:
 Meaning:
 - `while_pending` stays active while a referencing condition remains false
 - `on_departure_pulse` fires one pulse when the wait completes and the train departs
+
+The Schedule editor's redstone-rule output picker offers the **union** of `redstone_outputs`
+across every entry station (so a rule may bind an output defined on any entry's station). Stations
+still OWN and DEFINE their outputs in the Stations tab; the union is editor-only discovery and does
+not change how the dispatcher drives the active entry's station. A rule bound to a non-active entry's
+output validates, but only fires at runtime when that entry is the active wait station.
 
 V1 remains intentionally limited:
 - no redstone input waits

@@ -390,7 +390,7 @@ do
   local state = editor.new_state()
   state.book.STATIONS.mine = {
     display_name = "Mine",
-    detector_ids = {},
+    detector_ids = {"loader_d", "depart_d"},
     redstone_outputs = {
       loader = {address = "redstone-a"},
     },
@@ -416,9 +416,20 @@ do
       },
     },
   })
+  local function click_chooser(field, option_index)
+    local target = {
+      id = ("modal:chain:chooser:1:%d"):format(option_index),
+      modal_chain_field = field,
+      x = 1, y = 1, width = 10, height = 1,
+    }
+    return editor.handle_click(state, 1, 1, {modal_targets = {target}})
+  end
   state.modal = {
     title = "Edit Schedule",
-    fields = {editor.make_text_field({key = "route", label = "Route", value = "ore"}), chain_field},
+    fields = {
+      editor.make_repeatable_text_field({key = "entries", label = "Entries station | route", values = {"mine | ore"}, min_items = 1}),
+      chain_field,
+    },
     active_row = 1,
     scroll_y = 0,
     on_submit = function()
@@ -453,13 +464,24 @@ do
   editor.handle_key_down(state, 0, 28)
   assert(chain_field.chooser and chain_field.chooser.kind == "scope", "scope should be selected from a chooser menu")
   local scope_options = chain_field.chooser.options or {}
-  local saw_station_any = false
+  local saw_station = false
   for _, option in ipairs(scope_options) do
-    if option == "station_any_detector" then
-      saw_station_any = true
+    if option == "mine" then
+      saw_station = true
     end
   end
-  assert(saw_station_any == true, "scope chooser should include station scope options")
+  assert(saw_station == true, "scope chooser should list the schedule entry station")
+
+  assert(chain_field.chooser.stage == "station", "scope chooser should start at the station stage")
+  click_chooser(chain_field, 1)
+  assert(chain_field.chooser.stage == "detectors", "choosing a station should open the detector stage")
+  assert(chain_field.chooser.options[1] == "(all detectors)", "detector stage should offer (all detectors)")
+  assert(chain_field.chooser.options[#chain_field.chooser.options] == "(done)", "detector stage should end with (done)")
+  click_chooser(chain_field, 3)
+  assert(chain_field.chooser.selected_detectors.loader_d == true, "toggling a detector should select it")
+  click_chooser(chain_field, #chain_field.chooser.options)
+  assert(chain_field.chooser == nil, "choosing (done) should close the chooser")
+  assert(chain_field.groups[1].conditions[1].scope == "station:mine:detectors:loader_d", "scope should write the selected detector set")
 end
 
 do
@@ -755,7 +777,7 @@ do
   assert(save_text:find("Click [+] to add a condition, then choose AND or OR before the next one.", 1, true) ~= nil, "save tab should explain the add-and-choose flow")
   assert(save_text:find("Comparator-based conditions open a comparator chooser before returning.", 1, true) ~= nil, "save tab should explain comparator chooser behavior")
   assert(save_text:find("Wait controls departure. Redstone rules are separate.", 1, true) ~= nil, "save tab should explain split wait/redstone logic")
-  assert(save_text:find("Redstone rule outputs come from the route destination station I/Os.", 1, true) ~= nil, "save tab should explain redstone rule outputs")
+  assert(save_text:find("Redstone rule outputs come from every entry station's I/Os.", 1, true) ~= nil, "save tab should explain redstone rule outputs")
   assert(save_text:find("read-only here", 1, true) == nil, "save tab should no longer claim that redstone outputs are read-only")
   assert(save_text:find("uses redstone: loop entry 1 -> loader (while_pending)", 1, true) ~= nil, "save tab should summarize redstone-linked wait conditions")
 end

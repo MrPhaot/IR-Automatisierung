@@ -180,6 +180,22 @@ end
 
 do
   local mod = assert(loadfile("./programs/route_book_editor.lua"))("__module__")
+  assert(mod.scope_to_editor_text({station_id = "1_oil_ref", all_detectors = true}) == "station:1_oil_ref:all", "all-detector scope should round-trip to station:<id>:all")
+  assert(mod.scope_to_editor_text({station_id = "1_oil_ref", detector_ids = {"loader"}}) == "station:1_oil_ref:detectors:loader", "detector-set scope should round-trip to station:<id>:detectors:loader")
+  assert(mod.scope_to_editor_text("station_any_detector") == "station_any_detector", "legacy scope strings should pass through verbatim")
+  local parsed = mod.scope_from_editor_text("station:1_oil_ref:detectors:loader")
+  assert(parsed.station_id == "1_oil_ref" and type(parsed.detector_ids) == "table" and parsed.detector_ids[1] == "loader", "editor text should parse back into a detector-set table")
+  local union = mod.available_redstone_ids_for_schedule({
+    STATIONS = {
+      a = {redstone_outputs = {loader = {}, depart = {}}},
+      b = {redstone_outputs = {depart = {}, siding = {}}},
+    },
+  }, {"a", "b"})
+  assert(#union == 3 and union[1] == "depart" and union[2] == "loader" and union[3] == "siding", "schedule redstone options should be the union of entry station outputs")
+end
+
+do
+  local mod = assert(loadfile("./programs/route_book_editor.lua"))("__module__")
   local state = mod.new_state()
   state.active_tab = 4
   state.book.SCHEDULES.loop = {

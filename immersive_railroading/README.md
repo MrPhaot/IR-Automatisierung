@@ -2,6 +2,8 @@
 
 Foundation V1 for an OpenComputers-driven Immersive Railroading control stack, now with a station dispatcher and a Factorio-style schedule layer.
 
+Baseline: Minecraft 1.7.10, Immersive Railroading 1.11.0 (GTNH port). The GitHub `TeamOpenIndustry/ImmersiveRailroading` changelog describes a different MC line (1.17+) and does not apply here.
+
 Current production pieces:
 - `programs/train_controller.lua` for local motion control
 - `programs/station_dispatch.lua` for schedule execution, detector waits, and station-side redstone outputs

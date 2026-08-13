@@ -74,6 +74,17 @@ Why this stays separate:
 - `train_controller.lua` still owns only local motion control along a chosen route
 - `station_dispatch.lua` owns schedule order, detector waits, and station-side redstone outputs
 
+## Augment Configuration
+
+Augment filtering is configured in-game through the **AugmentFilterGUI** (tag/predicate filters:
+includeTags/excludeTags, positiveFilter/negativeFilter, stockDetectorMode, locoControlMode,
+redstoneMode, pushpull, couplerAugmentMode). The older right-click / redstone-torch configuration
+method is superseded. Tags are managed via augment `getTag`/`setTag` plus the filter's
+includeTags/excludeTags fields, not a stock-config `tags` key.
+
+The `/immersiverailroading reload` command still exists in this 1.11.0 build and reloads config;
+do not document it as removed.
+
 ## Route Book Editor Invocation
 From `/home/immersive_railroading/programs`:
 
