@@ -409,32 +409,6 @@ end
 
 local route_destination_station_id
 
-local function available_scope_options_for_route_destination(book, route_id, current_scope)
-  local options = {
-    SCHEDULE_SCOPE_BASE_OPTIONS[1],
-    SCHEDULE_SCOPE_BASE_OPTIONS[2],
-  }
-  local station_id = route_destination_station_id(book, route_id)
-  local station = station_id and book and book.STATIONS and book.STATIONS[station_id] or nil
-  for _, detector_id in ipairs(station and station.detector_ids or {}) do
-    options[#options + 1] = "detector:" .. tostring(detector_id)
-  end
-  local current = trim(scope_to_editor_text(current_scope))
-  if current ~= "" then
-    local found = false
-    for _, option in ipairs(options) do
-      if option == current then
-        found = true
-        break
-      end
-    end
-    if not found then
-      options[#options + 1] = current
-    end
-  end
-  return options
-end
-
 local function make_chain_condition(condition)
   condition = condition or {}
   return {
@@ -1344,23 +1318,78 @@ local function first_redstone_rules_field(modal)
   return nil
 end
 
-local function schedule_route_field(modal)
+-- The schedule modal has no standalone "route" field; entries are stored as
+-- "station | route" text rows (see collect_schedule_entry_refs). Redstone rule
+-- outputs and wait-condition scopes both belong to the schedule's first entry,
+-- so the destination station must be read from that row, not a missing field.
+local function modal_first_entry_ref(modal)
   for _, field in ipairs(modal and modal.fields or {}) do
-    if field.key == "route" then
-      return field
+    if field.key == "entries" then
+      local first = field.items and field.items[1]
+      if not first then
+        return nil
+      end
+      local refs = collect_schedule_entry_refs({entries = {first.value}})
+      return refs[1]
     end
   end
   return nil
 end
 
-local function schedule_route_value(modal)
-  local field = schedule_route_field(modal)
-  return trim(field and field.value or "")
+-- Prefer the route's terminal station, but fall back to the entry's own station
+-- when the route is omitted (the dispatcher auto-resolves it). station_schedule
+-- validates that both name the same destination station.
+local function entry_destination_station_id(book, station_id, route_id)
+  if type(route_id) == "string" and route_id ~= "" then
+    local resolved = route_destination_station_id(book, route_id)
+    if resolved then
+      return resolved
+    end
+  end
+  return type(station_id) == "string" and station_id ~= "" and station_id or nil
+end
+
+local function modal_destination_station_id(book, modal)
+  local ref = modal_first_entry_ref(modal)
+  if not ref then
+    return nil
+  end
+  return entry_destination_station_id(book, ref.station, ref.route)
+end
+
+local function available_redstone_ids_for_station(book, station_id)
+  local station = station_id and book and book.STATIONS and book.STATIONS[station_id] or nil
+  return sorted_keys(station and station.redstone_outputs or {})
+end
+
+local function available_scope_options_for_station(book, station_id, current_scope)
+  local options = {
+    SCHEDULE_SCOPE_BASE_OPTIONS[1],
+    SCHEDULE_SCOPE_BASE_OPTIONS[2],
+  }
+  local station = station_id and book and book.STATIONS and book.STATIONS[station_id] or nil
+  for _, detector_id in ipairs(station and station.detector_ids or {}) do
+    options[#options + 1] = "detector:" .. tostring(detector_id)
+  end
+  local current = trim(scope_to_editor_text(current_scope))
+  if current ~= "" then
+    local found = false
+    for _, option in ipairs(options) do
+      if option == current then
+        found = true
+        break
+      end
+    end
+    if not found then
+      options[#options + 1] = current
+    end
+  end
+  return options
 end
 
 local function refresh_rule_output_options(modal, field)
-  local route_id = schedule_route_value(modal)
-  local options = available_redstone_ids_for_route_destination(field and field.book or nil, route_id)
+  local station_id = modal_destination_station_id(field and field.book or nil, modal)
+  local options = available_redstone_ids_for_station(field and field.book or nil, station_id)
   local seen_current = false
   for _, option in ipairs(options) do
     if option == tostring(field.output.value or "") then
@@ -1970,8 +1999,8 @@ local function begin_scope_chooser(state, field)
   if not condition then
     return false
   end
-  local route_id = schedule_route_value(state.modal)
-  local options = available_scope_options_for_route_destination(state.book, route_id, condition.scope)
+  local station_id = modal_destination_station_id(state.book, state.modal)
+  local options = available_scope_options_for_station(state.book, station_id, condition.scope)
   local selected = 1
   for index, option in ipairs(options) do
     if option == tostring(condition.scope or "station_any_detector") then
@@ -4256,6 +4285,9 @@ local exports = {
   collect_schedule_entry_refs = collect_schedule_entry_refs,
   route_destination_station_id = route_destination_station_id,
   available_redstone_ids_for_route_destination = available_redstone_ids_for_route_destination,
+  modal_destination_station_id = modal_destination_station_id,
+  available_redstone_ids_for_station = available_redstone_ids_for_station,
+  available_scope_options_for_station = available_scope_options_for_station,
   runtime_condition_from_editor = runtime_condition_from_editor,
   runtime_groups_from_chain = runtime_groups_from_chain,
   runtime_redstone_rules_from_chain = runtime_redstone_rules_from_editor,

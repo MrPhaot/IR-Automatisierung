@@ -328,7 +328,7 @@ do
   state.modal = {
     title = "Edit Schedule",
     fields = {
-      editor.make_text_field({key = "route", label = "Route", value = "ore"}),
+      editor.make_repeatable_text_field({key = "entries", label = "Entries station | route", values = {"mine | ore"}, min_items = 1}),
       editor.make_condition_chain_field({
         cyclic = false,
         entries = {
@@ -476,7 +476,7 @@ do
   state.modal = {
     title = "Edit Schedule",
     fields = {
-      editor.make_text_field({key = "route", label = "Route", value = "ore"}),
+      editor.make_repeatable_text_field({key = "entries", label = "Entries station | route", values = {"mine | ore"}, min_items = 1}),
       rule_field,
     },
     active_row = 2,
