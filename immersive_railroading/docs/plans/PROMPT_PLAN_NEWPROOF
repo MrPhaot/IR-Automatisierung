@@ -1,0 +1,409 @@
+You are the proof-repair and proof-authoring agent for this repository.
+
+Your complete specification is in:
+
+`immersive_railroading/docs/plans/PLAN_NEWPROOF.md`
+
+Read that file completely and implement it faithfully. The goal is to replace the PID-centered proof with a geometry- and IR-physics-guided proof that makes the eventual Lua implementation reliable on the first or second implementation attempt.
+
+## Non-negotiable scope
+
+Do not modify:
+
+- `immersive_railroading/programs/train_controller.lua`;
+- any production Lua file;
+- unrelated dirty-worktree changes;
+- `PLAN_PROOFREPAIR.md`.
+
+You may inspect Lua and document the exact future changes required. Stop after the proof artifacts, audit, implementation contract, and readiness report are complete.
+
+## Context Preparation and Authority Rules
+
+Treat `immersive_railroading/docs/plans/PLAN_NEWPROOF.md` as the sole
+authoritative specification.
+
+Do not derive the new proof from existing PID proofs or historical plans. If
+any existing artifact conflicts with `PLAN_NEWPROOF.md` or verified Java-8 root
+bytecode, discard the conflicting material.
+
+### Read first
+
+Before opening the old proof bodies, read:
+
+- `immersive_railroading/AGENTS.md`;
+- repository and Immersive Railroading README files;
+- `immersive_railroading/docs/README.md`;
+- `immersive_railroading/docs/runtime.md`;
+- `immersive_railroading/docs/control-model.md`;
+- `immersive_railroading/docs/plans/PLAN_NEWPROOF.md`;
+- the extracted jar manifest;
+- the complete relevant Java-8 root decompiled files;
+- `javap -p -c` output for the relevant physics, geometry, and API classes.
+
+Establish independently:
+
+- the accurate tracer-derived track-centre representation;
+- the separate spline and graph models;
+- incremental spline reconstruction;
+- detector-based consist profiling;
+- directed station/signal approaches;
+- front-coupler stopping localization;
+- the combined throttle/brake transition;
+- robust arrival and fail-closed runtime contracts.
+
+### Do not initially read
+
+Do not initially read or use:
+
+- `PLAN_PROOFREPAIR.md`;
+- `HANDOFF_PROOFREWRITE.md`;
+- historical proof plans;
+- old session transcripts;
+- the mathematical contents of previous proofs.
+
+These are not authoritative and can anchor the implementation to the obsolete
+PID proof.
+
+### Existing deliverables
+
+After the new model has been established, inspect these files only as
+untrusted migration/build artifacts:
+
+- `pid-formal-proof.tex`;
+- `pid-proof-lean/`;
+- `pid-audit-report.md`;
+- `pid-implementation-plan.md`.
+
+Use them only to determine what must be replaced, what build structure exists,
+and which obsolete claims or gaps must be reported. Do not preserve a theorem,
+assumption, abstraction, or readiness claim merely because it already compiles.
+
+If an old artifact conflicts with the new plan or jar evidence, replace or
+withdraw it rather than weakening the new proof to accommodate it.
+
+## Jar provenance
+
+The extracted jar under:
+
+`immersive_railroading/.cache/jar/`
+
+is authoritative.
+
+Verify and record:
+
+- Minecraft 1.7.10;
+- Immersive Railroading 1.11.0;
+- Java-8 root class files are the target;
+- `META-INF/versions/16` classes are not silently used;
+- hashes of relevant class files and decompiled inputs.
+
+Read complete decompiled files and inspect root bytecode with `javap -p -c`.
+
+At minimum investigate:
+
+- `CommonAPI`;
+- remote-control and detector adapters;
+- `EntityRollingStock` position semantics;
+- `SimulationState.moveAlongTrack`;
+- `SimulationState.Configuration`;
+- `SimulationState.forcesNewtons`;
+- `SimulationState.frictionNewtons`;
+- `Consist` and `Consist$Particle`;
+- `PhysicalMaterials`;
+- `Config$ConfigBalance`;
+- `getBrakeSystemEfficiency`;
+- locomotive cogging overrides;
+- train-brake and independent-brake paths;
+- `CubicCurve`;
+- `BuilderStraight`, `BuilderTurn`, `BuilderSlope`;
+- `BuilderSwitch`, `BuilderCrossing`;
+- `MovementTrack`, `ITrack`, and rail metadata;
+- detector events and `info()` payloads.
+
+Every final claim must be classified as bytecode fact, derived result, model assumption, runtime contract, implementation obligation, or unsupported claim.
+
+## Required conceptual model
+
+Keep these representations separate:
+
+```text
+tracer samples
+→ accurate track-centre spline model
+→ routing graph derived from splines
+→ controller localization and physics
+```
+
+The spline model is the geometric source of truth. The graph is only a routing abstraction.
+
+The tracer uses a compact locomotive. Its position must be converted into the most accurate possible track-centre representation using the stock geometry, bogey offsets, IR movement semantics, successive samples, and an explicit residual bound.
+
+The front coupler is not the tracer reference. It is used only for stopping.
+
+The stopping target is the front coupler position. Do not treat raw `getPos()` as the F3 hitbox or automatically as the exact rail centreline.
+
+## Spline and graph requirements
+
+Represent track sections as 3D cubic Bézier splines with:
+
+- control points;
+- both traversal orientations;
+- arc-length representation;
+- tangent, grade, and curvature;
+- fitting error;
+- source trace metadata;
+- stable identifiers.
+
+Straight segments are degenerate Bézier curves. IR turns must not be described as exact circles unless the bytecode justifies that claim.
+
+Support repeated trace runs. New traces must be matched against existing splines and may extend, continue, split, overlap, intersect, or create new spline geometry.
+
+Use 3D distance, tangent, curvature, and arc-length matching. Do not merge paths merely because their 2D projections intersect.
+
+Automatically distinguish wherever possible:
+
+- continuation;
+- extension;
+- genuine shared connection;
+- isolated same-level crossing;
+- height-separated overpass;
+- unresolved ambiguity.
+
+A crossing preserves separate spline paths and does not create a shared physical connection. An overpass is separate if its 3D distance exceeds the certified tolerance.
+
+Manual classification is allowed only when observations cannot determine topology, such as an unexplored branch or coincident same-level paths with indistinguishable connectivity. Ambiguous cases must remain unresolved and unavailable for routing; never silently guess.
+
+Build the routing graph from validated spline identifiers and arc-length intervals. Normally physical splines produce symmetric bidirectional graph edges.
+
+Stations and signals:
+
+- map to the closest spline only within an explicit tolerance;
+- store spline ID, arc-length coordinate, and permitted approach orientation;
+- impose direction constraints on the associated graph edge or interval.
+
+A station or signal has one configured approach direction. Do not claim that the opposite approach is valid unless separately configured.
+
+The train validates only the splines, vertices, and edges of its active route. It must not scan the entire graph. If an active route section changes, invalidate the route and invoke normal route finding against the latest graph. If no route exists, report the problem and stop.
+
+## Train-profile requirements
+
+Use the detector-based semi-automatic catalogue:
+
+- consume `ir_train_overhead`;
+- record `stock_uuid`;
+- immediately call detector `info()`;
+- record stock definition ID, weight, direction, speed, and available brake data;
+- preserve train order.
+
+Use `consist()` for aggregate validation, not as a substitute for per-stock information.
+
+Catalogue at a conservative speed, initially approximately 10 km/h unless a derived detector-spacing and response-time bound permits more.
+
+The profile is immutable during a run. A changed consist is a player responsibility. Detect profile mismatch, report it, stop, and require recataloguing.
+
+## Coordinate and stopping theorem
+
+Define a directed spline coordinate \(s\) increasing along the selected route.
+
+Use the front coupler only for stopping:
+
+\[
+x = s_{\text{target}} - s_{\text{front coupler}}
+\]
+
+\[
+v_s = \frac{d s_{\text{front coupler}}}{dt}.
+\]
+
+The stopping theorem applies only when \(x>0\) and \(v_s>0\). Wrong-way motion, target crossing, unavailable route orientation, or invalid localization must enter recovery or fail closed.
+
+Support either physical/world orientation by selecting the appropriate directed spline orientation, but do not accept a station approach that conflicts with its configured direction.
+
+## Physics and controller requirements
+
+Derive the signed force equation line by line from Java-8 root bytecode.
+
+Include:
+
+- steel static friction `0.70`;
+- steel kinetic friction `0.42`;
+- steel/cast-iron kinetic brake-shoe friction `0.25`;
+- brake-system efficiency;
+- cogging overrides;
+- current/design mass;
+- grade;
+- traction;
+- rolling/direct/interference resistance;
+- train-brake and independent-brake channels;
+- normalization/clamping;
+- adhesion;
+- wheel slip;
+- `brakeMultiplier`;
+- coupler slack;
+- push/pull interactions;
+- per-particle consist aggregation;
+- discrete updates.
+
+Do not introduce the central force equation as an unexplained abstraction.
+
+The controller proof must not assume zero throttle after stopping commitment. Model the actual combined command:
+
+- throttle;
+- train brake;
+- independent brake;
+- emergency braking where applicable.
+
+Connect:
+
+```text
+spline localization
+→ front-coupler error
+→ consist/length/curvature state
+→ throttle allocation
+→ brake allocation
+→ combined IR force
+→ plant transition
+→ next controller state
+```
+
+Positive throttle must be included in the stopping bound or constrained by a proved supervisor rule. It is invalid to prove a brake-only plant while allowing simultaneous throttle in the implementation.
+
+Cover:
+
+- cruise-to-stopping transition;
+- throttle/brake coexistence;
+- station geometry and direction;
+- consist length;
+- curvature/slack/push-pull effects;
+- saturation and slew;
+- terminal regulation;
+- terminal holding;
+- route invalidation;
+- profile mismatch.
+
+## Robust arrival
+
+Derive a uniform lower braking bound over the complete delay-plus-stopping horizon.
+
+Include:
+
+- all force branches;
+- grade;
+- speed changes;
+- wheel slip;
+- observation age;
+- command delay;
+- pressure delay;
+- curvature;
+- slack;
+- push/pull effects;
+- consist-specific braking;
+- positive tractive force;
+- localization and computation error.
+
+The terminal-entry guard must include delay distance, adverse motion, stopping distance, geometry error, and terminal tolerance.
+
+Prove:
+
+- stopping-envelope preservation;
+- no-crossing safety;
+- velocity convergence;
+- terminal arrival;
+- settling/holding;
+- route feasibility.
+
+The mathematical terminal state is \(v_s=0\). Runtime acceptance requires speed and front-coupler position to be within derived tolerances and stable for the required observations.
+
+Do not choose tolerances merely for convenience. Derive the position tolerance from trace, fitting, coupler, sample-age, command-delay, and numeric errors.
+
+## Anti-cheating audit
+
+Apply all 13 classes from `PLAN_NEWPROOF.md`:
+
+1. prohibited proof mechanisms;
+2. vacuous or assumption-leaking theorems;
+3. specialization presented as generality;
+4. model-equation mismatch;
+5. disconnected definitions;
+6. tautological optimality;
+7. sign, algebra, and dimensional errors;
+8. temporal/hybrid under-approximation;
+9. API/refinement failure;
+10. environment/version/provenance drift;
+11. numerical and representation unsoundness;
+12. safety/liveness/scope confusion;
+13. insufficient negative or mutation testing.
+
+Run:
+
+```bash
+lake build
+lake env lean Axioms.lean
+rg -n 'sorry|admit|axiom|opaque|unsafe|cast|ofReduceBool' .
+```
+
+Run `#print axioms` for every geometry, physics, safety, stopping, refinement, stability, and optimality theorem.
+
+Reject:
+
+- `sorry`, `admit`, custom axioms, unsafe escapes;
+- conclusions already present in assumptions;
+- hard-coded examples presented as general theorems;
+- disconnected proof-looking definitions;
+- `rfl` aliases presented as refinement;
+- exact-rational claims presented as automatic floating-point correctness;
+- optimality objectives constructed around the chosen controller;
+- claims stronger than their assumptions.
+
+Use mutation tests for:
+
+- route direction;
+- target crossing;
+- mass;
+- brake coefficient;
+- `brakeMultiplier`;
+- grade;
+- delay;
+- throttle;
+- spline geometry;
+- overpass/crossing classification;
+- curvature/slack bounds;
+- invalid consist profile.
+
+## Acceptance gates
+
+Apply all Gates A–I from `PLAN_NEWPROOF.md`.
+
+In particular:
+
+- Gate A: artifacts, provenance, hashes, clean Lean/LaTeX, and no forbidden mechanisms;
+- Gate B: separate spline, graph, controller, station direction, safety, arrival, feasibility, and optimality claims;
+- Gate C: explicit coordinates, front-coupler localization, bytecode-derived equations, uniform guard, combined throttle/brake transition, and separate arrival theorem;
+- Gate D: consistency among IR, Lean, LaTeX, splines, graph references, markers, curvature, slack, particles, and force branches;
+- Gate E: complete controller-to-plant refinement, including throttle and both brake channels;
+- Gate F: meaningful robust-arrival objective and withdrawn unsupported optimality;
+- Gate G: route-local validation, route-change latency, sample age, command delay, detector, profile, and fail-closed contracts;
+- Gate H: adversarial and mutation tests;
+- Gate I: no `READY_FOR_USER_APPROVAL` while any required geometry, physics, controller, arrival, or route-validation connection is assumed, excluded, or disconnected.
+
+## Deliverables
+
+Update only proof and planning artifacts:
+
+1. corrected or rewritten `pid-formal-proof.tex`;
+2. Lean proof under `pid-proof-lean/`;
+3. updated `pid-audit-report.md`;
+4. updated `pid-implementation-plan.md`;
+5. final readiness report;
+6. jar manifest and theorem-to-bytecode traceability;
+7. reproducible geometry, physics, controller, and arrival test vectors.
+
+The final report must classify every result as:
+
+- proved by Lean;
+- derived from bytecode;
+- certified model assumption;
+- runtime contract;
+- future Lua implementation obligation;
+- unsupported or withdrawn.
+
+Report `READY_FOR_USER_APPROVAL`, `CONDITIONALLY_READY`, or `NOT_READY` honestly. A passing build alone is never acceptance.

@@ -1,0 +1,11 @@
+{"plugins": [],
+ "package": "ir-proof",
+ "options": {},
+ "name": "IRRevisionTestVectors",
+ "isModule": false,
+ "importArts":
+ {"IRRevision":
+  [["/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRRevision.olean"]],
+  "IRProof":
+  [["/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRProof.olean"]]},
+ "dynlibs": []}

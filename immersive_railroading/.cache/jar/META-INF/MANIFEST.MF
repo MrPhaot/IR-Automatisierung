@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+JvmDowngrader-Version: 1.3.6
+Multi-Release: true
+Fabric-Loom-Mixin-Remap-Type: mixin
+

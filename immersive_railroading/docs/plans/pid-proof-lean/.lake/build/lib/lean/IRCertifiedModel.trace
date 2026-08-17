@@ -1,0 +1,33 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["cb38eb7aa0cd1624.olean"],
+  "m": false,
+  "i": "a28878a0f6811041.ilean",
+  "c": "e59356748907db18.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean /home/mrphaot/.elan/toolchains/leanprover--lean4---v4.33.0/bin/lean /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/IRCertifiedModel.lean -o /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRCertifiedModel.olean -i /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRCertifiedModel.ilean -c /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/ir/IRCertifiedModel.c --setup /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/ir/IRCertifiedModel.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["«ir-proof»/IRCertifiedModel:extraDep",
+     [["@«ir-proof»:extraDep", "00000000000006bb"]]],
+    ["imports",
+     [["IRProof transitive imports (legacy)", "00000000000006bb"],
+      ["IRProof:importAllArts", "ba26921acfe01aa8"]]]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.0, commit d8b18978322de05a8f3dba51ef03cf5461676c17",
+   "3eca9d16ab6c877d"],
+  ["/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/IRCertifiedModel.lean",
+   "7e7c2a73293500a8"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: IRCertifiedModel", "adc355a356a9a12e"],
+  ["Package.id?: (some ir-proof)", "f812aea9e6d32deb"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "c02ace08c7385597"}

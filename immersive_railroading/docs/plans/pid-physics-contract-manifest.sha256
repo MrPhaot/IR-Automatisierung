@@ -1,0 +1,10 @@
+# Canonical provenance pointer for the replacement proof.
+#
+# The complete checked hash list is maintained in pid-jar-manifest.md. These
+# identity/decompiler entries are repeated here for shell verification.
+29d333b67b81058749ee6ac3f8dec628bb55616abb0f6517f7cdac792f7c0c6e  immersive_railroading/.cache/jar/META-INF/MANIFEST.MF
+c380f08cd58155f1cacb2c7d72231bdb9a140c9c4e5d4512dd4a76db2946bfb0  immersive_railroading/.cache/jar/mcmod.info
+def38a76699a6db00e36807e3fbd913c3578952a0891429feb7240364664fff3  immersive_railroading/.cache/jar/SimulationState_decompiled.txt
+84377d308e7cdcd29efafc7efeb3a4e4e5fc43f5b0cdbe7c398dcbbb3345bbe5  immersive_railroading/.cache/jar/Configuration_decompiled.txt
+a8f2f622a7f24e669e4f45553d188f26409303952bc3c21ec08511b93078fa2d  immersive_railroading/.cache/jar/Particle_decompiled.txt
+820047c214a2b94604a876dc5e51ed7c5dc6ac13290c34a936d0d6f6d2b7826f  immersive_railroading/.cache/jar/LocomotiveDefinition_decompiled.txt

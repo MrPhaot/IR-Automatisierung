@@ -79,6 +79,7 @@ local TABS_COMPACT = {"Det", "Sta", "Rou", "Sch", "Save"}
 local SCHEDULE_CONDITION_TYPES = {
   "time_passed",
   "inactivity",
+  "arrived_at_station",
   "passengers",
   "cargo_percent",
   "fluid_percent",
@@ -443,6 +444,7 @@ local function make_chain_condition(condition)
   condition = condition or {}
   return {
     type = condition.type or "time_passed",
+    station = tostring(condition.station or ""),
     seconds = tostring(condition.seconds or 0),
     comparator = tostring(condition.comparator or ">="),
     value = tostring(condition.value or 0),
@@ -496,6 +498,17 @@ local function make_redstone_rule(rule, book)
       label = "Output",
       value = tostring(rule and rule.output or ""),
       options = {},
+    }),
+    signal = make_choice_field({
+      key = "signal",
+      label = "Signal",
+      value = tostring(rule and rule.signal or "constant"),
+      options = {"pulse", "constant"},
+    }),
+    pulse_ticks = make_text_field({
+      key = "pulse_ticks",
+      label = "Pulse ticks",
+      value = tostring(rule and rule.pulse_ticks or ""),
     }),
   }
 
@@ -560,6 +573,8 @@ local function chain_condition_label(condition)
   local label
   if condition.type == "time_passed" or condition.type == "inactivity" then
     label = ("%s %ss"):format(condition.type, tostring(condition.seconds or "0"))
+  elseif condition.type == "arrived_at_station" then
+    label = ("arrived at %s"):format(tostring(condition.station or "?"))
   else
     label = ("%s %s %s %s"):format(
       tostring(condition.type or "?"),
@@ -690,6 +705,8 @@ local function runtime_condition_from_editor(condition)
   local out = {type = condition.type}
   if condition.type == "time_passed" or condition.type == "inactivity" then
     out.seconds = tonumber(condition.seconds) or 0
+  elseif condition.type == "arrived_at_station" then
+    out.station = tostring(condition.station or "")
   else
     out.comparator = condition.comparator or ">="
     out.value = tonumber(condition.value) or 0
@@ -724,6 +741,8 @@ local function runtime_redstone_rules_from_editor(field)
     if output ~= "" then
       rules[#rules + 1] = {
         output = output,
+        signal = rule.signal and rule.signal.value or "constant",
+        pulse_ticks = tonumber(rule.pulse_ticks and rule.pulse_ticks.value) or nil,
         groups = runtime_groups_from_chain(rule),
       }
     end
@@ -1500,6 +1519,7 @@ local function build_chain_chooser_rows(field_index, field)
     condition_type = "Choose Condition",
     existing_condition_type = "Choose Condition",
     comparator = "Choose Comparator",
+    station_chooser = "Choose Station",
   })[chooser.kind]
   if chooser.kind == "scope" then
     section_label = chooser.stage == "detectors" and "Choose Detectors" or "Choose Scope Station"
@@ -1614,6 +1634,13 @@ local function build_modal_rows(modal)
             detail = "seconds",
             text_field = selected,
           }
+        elseif selected.type == "arrived_at_station" then
+          rows[#rows + 1] = {
+            kind = "chain_condition_detail",
+            field_index = field_index,
+            field = field,
+            detail = "station",
+          }
         else
           rows[#rows + 1] = {
             kind = "chain_condition_detail",
@@ -1677,6 +1704,16 @@ local function build_modal_rows(modal)
           field = field,
           rule_index = field.selected_rule_index,
           rule = rule,
+        }
+        rows[#rows + 1] = {
+          kind = "choice",
+          field_index = field_index,
+          field = rule.signal,
+        }
+        rows[#rows + 1] = {
+          kind = "text",
+          field_index = field_index,
+          field = rule.pulse_ticks,
         }
         local token_lines = chain_token_lines(rule, modal.chain_wrap_width or 48)
         for line_index, line in ipairs(token_lines) do
@@ -2063,6 +2100,34 @@ local function begin_existing_comparator_chooser(field)
   return true
 end
 
+local function begin_station_chooser_for_arrival(state, field)
+  local condition = selected_chain_condition(field)
+  if not condition then
+    return false
+  end
+  local station_ids = schedule_entry_station_ids(state.book, state.modal)
+  if #station_ids == 0 then
+    return false
+  end
+  local selected = 1
+  for index, station_id in ipairs(station_ids) do
+    if station_id == condition.station then
+      selected = index
+      break
+    end
+  end
+  field.chooser = {
+    kind = "station_chooser",
+    condition_ref = {
+      group_index = field.selected_group_index,
+      condition_index = field.selected_condition_index,
+    },
+    options = station_ids,
+    selected = selected,
+  }
+  return true
+end
+
 local function merge_all_detectors_and_done(detector_options)
   local options = {"(all detectors)"}
   for _, detector_id in ipairs(detector_options or {}) do
@@ -2109,6 +2174,8 @@ local function apply_condition_type(condition, option)
   condition.type = tostring(option or "time_passed")
   if condition.type == "time_passed" or condition.type == "inactivity" then
     condition.seconds = tostring(condition.seconds or 0)
+  elseif condition.type == "arrived_at_station" then
+    condition.station = tostring(condition.station or "")
   else
     condition.comparator = tostring(condition.comparator or ">=")
     condition.value = tostring(condition.value or 0)
@@ -2166,6 +2233,8 @@ local function choose_chain_option(state, row)
         options = SCHEDULE_COMPARATORS,
         selected = 4,
       }
+    elseif condition.type == "arrived_at_station" then
+      return begin_station_chooser_for_arrival(state, field)
     else
       field.chooser = nil
     end
@@ -2271,6 +2340,18 @@ local function choose_chain_option(state, row)
     return false
   end
 
+  if chooser.kind == "station_chooser" then
+    local condition = field.groups[chooser.condition_ref.group_index].conditions[chooser.condition_ref.condition_index]
+    if not condition then
+      return false
+    end
+    condition.station = tostring(chooser.options[chooser.selected] or "")
+    field.selected_group_index = chooser.condition_ref.group_index
+    field.selected_condition_index = chooser.condition_ref.condition_index
+    field.chooser = nil
+    return true
+  end
+
   return false
 end
 
@@ -2352,6 +2433,9 @@ local function chain_detail_visible_value(row, available, show_cursor)
   end
   if row.detail == "scope" then
     return ("Scope: [%s]"):format(tostring(condition.scope or "station_any_detector"))
+  end
+  if row.detail == "station" then
+    return ("Station: [%s]"):format(tostring(condition.station or "?"))
   end
   return ""
 end
@@ -3337,6 +3421,9 @@ local function handle_click(state, x, y, screen)
             if clicked_row.detail == "scope" then
               return begin_scope_chooser(state, clicked_row.field)
             end
+            if clicked_row.detail == "station" then
+              return begin_station_chooser_for_arrival(state, clicked_row.field)
+            end
           end
           return true
         end
@@ -3380,6 +3467,9 @@ local function handle_click(state, x, y, screen)
       end
       if clicked_row.detail == "scope" then
         return begin_scope_chooser(state, clicked_row.field)
+      end
+      if clicked_row.detail == "station" then
+        return begin_station_chooser_for_arrival(state, clicked_row.field)
       end
     end
     return true

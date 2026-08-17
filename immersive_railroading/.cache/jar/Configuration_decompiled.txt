@@ -1,0 +1,393 @@
+Compiled from "SimulationState.java"
+public class cam72cam.immersiverailroading.entity.physics.SimulationState$Configuration {
+  public java.util.UUID id;
+
+  public cam72cam.immersiverailroading.library.Gauge gauge;
+
+  public cam72cam.mod.world.World world;
+
+  public double width;
+
+  public double length;
+
+  public double height;
+
+  public java.util.function.Function<cam72cam.immersiverailroading.entity.physics.SimulationState, cam72cam.mod.entity.boundingbox.IBoundingBox> bounds;
+
+  public float offsetFront;
+
+  public float offsetRear;
+
+  public boolean couplerEngagedFront;
+
+  public boolean couplerEngagedRear;
+
+  public double couplerDistanceFront;
+
+  public double couplerDistanceRear;
+
+  public double couplerSlackFront;
+
+  public double couplerSlackRear;
+
+  public double massKg;
+
+  public double maximumAdhesionNewtons;
+
+  public double designAdhesionNewtons;
+
+  public double rollingResistanceCoefficient;
+
+  private final java.util.function.Function<java.util.List<cam72cam.mod.math.Vec3i>, java.lang.Double> directResistanceNewtons;
+
+  private double tractiveEffortFactors;
+
+  private java.util.function.Function<cam72cam.immersiverailroading.util.Speed, java.lang.Double> tractiveEffortNewtons;
+
+  public java.lang.Double desiredBrakePressure;
+
+  public double independentBrakePosition;
+
+  public boolean hasPressureBrake;
+
+  public cam72cam.immersiverailroading.entity.physics.SimulationState$Configuration(cam72cam.immersiverailroading.entity.EntityCoupleableRollingStock);
+    Code:
+       0: aload_0
+       1: invokespecial #64                 // Method java/lang/Object."<init>":()V
+       4: aload_0
+       5: aload_1
+       6: invokevirtual #68                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getUUID:()Ljava/util/UUID;
+       9: putfield      #70                 // Field id:Ljava/util/UUID;
+      12: aload_0
+      13: aload_1
+      14: getfield      #72                 // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      17: putfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      20: aload_0
+      21: aload_1
+      22: invokevirtual #77                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getWorld:()Lcam72cam/mod/world/World;
+      25: putfield      #79                 // Field world:Lcam72cam/mod/world/World;
+      28: aload_0
+      29: aload_1
+      30: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+      33: aload_0
+      34: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      37: invokevirtual #89                 // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getWidth:(Lcam72cam/immersiverailroading/library/Gauge;)D
+      40: putfield      #91                 // Field width:D
+      43: aload_0
+      44: aload_1
+      45: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+      48: aload_0
+      49: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      52: invokevirtual #94                 // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getLength:(Lcam72cam/immersiverailroading/library/Gauge;)D
+      55: putfield      #96                 // Field length:D
+      58: aload_0
+      59: aload_1
+      60: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+      63: aload_0
+      64: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      67: invokevirtual #99                 // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getHeight:(Lcam72cam/immersiverailroading/library/Gauge;)D
+      70: putfield      #101                // Field height:D
+      73: aload_1
+      74: invokevirtual #105                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getRotationPitch:()F
+      77: f2d
+      78: invokestatic  #111                // Method java/lang/Math.toRadians:(D)D
+      81: invokestatic  #114                // Method java/lang/Math.sin:(D)D
+      84: aload_0
+      85: getfield      #96                 // Field length:D
+      88: dmul
+      89: invokestatic  #117                // Method java/lang/Math.abs:(D)D
+      92: dstore_2
+      93: aload_0
+      94: aload_0
+      95: aload_1
+      96: dload_2
+      97: invokedynamic #137,  0            // InvokeDynamic #0:apply:(Lcam72cam/immersiverailroading/entity/physics/SimulationState$Configuration;Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock;D)Ljava/util/function/Function;
+     102: putfield      #139                // Field bounds:Ljava/util/function/Function;
+     105: aload_0
+     106: aload_1
+     107: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     110: aload_0
+     111: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+     114: invokevirtual #143                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getBogeyFront:(Lcam72cam/immersiverailroading/library/Gauge;)F
+     117: putfield      #145                // Field offsetFront:F
+     120: aload_0
+     121: aload_1
+     122: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     125: aload_0
+     126: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+     129: invokevirtual #148                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getBogeyRear:(Lcam72cam/immersiverailroading/library/Gauge;)F
+     132: putfield      #150                // Field offsetRear:F
+     135: aload_0
+     136: aload_1
+     137: getstatic     #154                // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType.FRONT:Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;
+     140: invokevirtual #158                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.isCouplerEngaged:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;)Z
+     143: putfield      #160                // Field couplerEngagedFront:Z
+     146: aload_0
+     147: aload_1
+     148: getstatic     #163                // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType.BACK:Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;
+     151: invokevirtual #158                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.isCouplerEngaged:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;)Z
+     154: putfield      #165                // Field couplerEngagedRear:Z
+     157: aload_0
+     158: aload_1
+     159: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     162: getstatic     #154                // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType.FRONT:Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;
+     165: aload_0
+     166: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+     169: invokevirtual #169                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getCouplerPosition:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;Lcam72cam/immersiverailroading/library/Gauge;)D
+     172: putfield      #171                // Field couplerDistanceFront:D
+     175: aload_0
+     176: aload_1
+     177: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     180: getstatic     #163                // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType.BACK:Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;
+     183: aload_0
+     184: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+     187: invokevirtual #169                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getCouplerPosition:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;Lcam72cam/immersiverailroading/library/Gauge;)D
+     190: dneg
+     191: putfield      #173                // Field couplerDistanceRear:D
+     194: aload_0
+     195: aload_1
+     196: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     199: getstatic     #154                // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType.FRONT:Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;
+     202: aload_0
+     203: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+     206: invokevirtual #176                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getCouplerSlack:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;Lcam72cam/immersiverailroading/library/Gauge;)D
+     209: putfield      #178                // Field couplerSlackFront:D
+     212: aload_0
+     213: aload_1
+     214: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     217: getstatic     #163                // Field cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType.BACK:Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;
+     220: aload_0
+     221: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+     224: invokevirtual #176                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getCouplerSlack:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock$CouplerType;Lcam72cam/immersiverailroading/library/Gauge;)D
+     227: putfield      #180                // Field couplerSlackRear:D
+     230: aload_0
+     231: aload_1
+     232: invokevirtual #184                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getWeight:()D
+     235: putfield      #186                // Field massKg:D
+     238: getstatic     #189                // Field cam72cam/immersiverailroading/Config$ConfigBalance.FuelRequired:Z
+     241: ifne          265
+     244: aload_1
+     245: instanceof    #191                // class cam72cam/immersiverailroading/entity/Locomotive
+     248: ifne          258
+     251: aload_1
+     252: instanceof    #193                // class cam72cam/immersiverailroading/entity/Tender
+     255: ifeq          265
+     258: aload_0
+     259: getfield      #186                // Field massKg:D
+     262: goto          269
+     265: aload_1
+     266: invokevirtual #196                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getMaxWeight:()D
+     269: dstore        4
+     271: aload_1
+     272: instanceof    #191                // class cam72cam/immersiverailroading/entity/Locomotive
+     275: ifeq          335
+     278: aload_1
+     279: checkcast     #191                // class cam72cam/immersiverailroading/entity/Locomotive
+     282: astore        6
+     284: aload_0
+     285: aload         6
+     287: dup
+     288: invokestatic  #201                // Method java/util/Objects.requireNonNull:(Ljava/lang/Object;)Ljava/lang/Object;
+     291: pop
+     292: invokedynamic #211,  0            // InvokeDynamic #1:apply:(Lcam72cam/immersiverailroading/entity/Locomotive;)Ljava/util/function/Function;
+     297: putfield      #213                // Field tractiveEffortNewtons:Ljava/util/function/Function;
+     300: aload_0
+     301: aload         6
+     303: invokevirtual #216                // Method cam72cam/immersiverailroading/entity/Locomotive.getThrottle:()F
+     306: aload         6
+     308: invokevirtual #219                // Method cam72cam/immersiverailroading/entity/Locomotive.getReverser:()F
+     311: ldc           #220                // float 10.0f
+     313: fmul
+     314: fadd
+     315: f2d
+     316: putfield      #222                // Field tractiveEffortFactors:D
+     319: aload_0
+     320: aload         6
+     322: invokevirtual #225                // Method cam72cam/immersiverailroading/entity/Locomotive.getTrainBrake:()F
+     325: f2d
+     326: invokestatic  #231                // Method java/lang/Double.valueOf:(D)Ljava/lang/Double;
+     329: putfield      #233                // Field desiredBrakePressure:Ljava/lang/Double;
+     332: goto          354
+     335: aload_0
+     336: invokedynamic #240,  0            // InvokeDynamic #2:apply:()Ljava/util/function/Function;
+     341: putfield      #213                // Field tractiveEffortNewtons:Ljava/util/function/Function;
+     344: aload_0
+     345: dconst_0
+     346: putfield      #222                // Field tractiveEffortFactors:D
+     349: aload_0
+     350: aconst_null
+     351: putfield      #233                // Field desiredBrakePressure:Ljava/lang/Double;
+     354: getstatic     #246                // Field cam72cam/immersiverailroading/library/PhysicalMaterials.STEEL:Lcam72cam/immersiverailroading/library/PhysicalMaterials;
+     357: getstatic     #246                // Field cam72cam/immersiverailroading/library/PhysicalMaterials.STEEL:Lcam72cam/immersiverailroading/library/PhysicalMaterials;
+     360: invokevirtual #250                // Method cam72cam/immersiverailroading/library/PhysicalMaterials.staticFriction:(Lcam72cam/immersiverailroading/library/PhysicalMaterials;)F
+     363: f2d
+     364: dstore        6
+     366: aload_0
+     367: aload_0
+     368: getfield      #186                // Field massKg:D
+     371: dload         6
+     373: dmul
+     374: ldc2_w        #251                // double 9.8d
+     377: dmul
+     378: aload_1
+     379: invokevirtual #255                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getBrakeAdhesionEfficiency:()D
+     382: dmul
+     383: putfield      #257                // Field maximumAdhesionNewtons:D
+     386: aload_0
+     387: dload         4
+     389: dload         6
+     391: dmul
+     392: ldc2_w        #251                // double 9.8d
+     395: dmul
+     396: aload_1
+     397: invokevirtual #260                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getBrakeSystemEfficiency:()D
+     400: dmul
+     401: putfield      #262                // Field designAdhesionNewtons:D
+     404: aload_0
+     405: aload_1
+     406: invokevirtual #265                // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getIndependentBrake:()F
+     409: f2d
+     410: putfield      #267                // Field independentBrakePosition:D
+     413: aload_0
+     414: aload_1
+     415: dup
+     416: invokestatic  #201                // Method java/util/Objects.requireNonNull:(Ljava/lang/Object;)Ljava/lang/Object;
+     419: pop
+     420: invokedynamic #279,  0            // InvokeDynamic #3:apply:(Lcam72cam/immersiverailroading/entity/EntityCoupleableRollingStock;)Ljava/util/function/Function;
+     425: putfield      #281                // Field directResistanceNewtons:Ljava/util/function/Function;
+     428: aload_0
+     429: aload_1
+     430: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     433: invokevirtual #284                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.hasPressureBrake:()Z
+     436: putfield      #286                // Field hasPressureBrake:Z
+     439: aload_0
+     440: aload_1
+     441: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+     444: getfield      #288                // Field cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.rollingResistanceCoefficient:D
+     447: putfield      #289                // Field rollingResistanceCoefficient:D
+     450: return
+
+  public boolean equals(java.lang.Object);
+    Code:
+       0: aload_1
+       1: instanceof    #2                  // class cam72cam/immersiverailroading/entity/physics/SimulationState$Configuration
+       4: ifeq          134
+       7: aload_1
+       8: checkcast     #2                  // class cam72cam/immersiverailroading/entity/physics/SimulationState$Configuration
+      11: astore_2
+      12: aload_0
+      13: getfield      #160                // Field couplerEngagedFront:Z
+      16: aload_2
+      17: getfield      #160                // Field couplerEngagedFront:Z
+      20: if_icmpne     132
+      23: aload_0
+      24: getfield      #165                // Field couplerEngagedRear:Z
+      27: aload_2
+      28: getfield      #165                // Field couplerEngagedRear:Z
+      31: if_icmpne     132
+      34: aload_0
+      35: getfield      #222                // Field tractiveEffortFactors:D
+      38: aload_2
+      39: getfield      #222                // Field tractiveEffortFactors:D
+      42: dsub
+      43: invokestatic  #117                // Method java/lang/Math.abs:(D)D
+      46: ldc2_w        #300                // double 0.01d
+      49: dcmpg
+      50: ifge          132
+      53: aload_0
+      54: getfield      #186                // Field massKg:D
+      57: aload_2
+      58: getfield      #186                // Field massKg:D
+      61: dsub
+      62: invokestatic  #117                // Method java/lang/Math.abs:(D)D
+      65: aload_0
+      66: getfield      #186                // Field massKg:D
+      69: ddiv
+      70: ldc2_w        #300                // double 0.01d
+      73: dcmpg
+      74: ifge          132
+      77: aload_0
+      78: getfield      #233                // Field desiredBrakePressure:Ljava/lang/Double;
+      81: ifnull        109
+      84: aload_0
+      85: getfield      #233                // Field desiredBrakePressure:Ljava/lang/Double;
+      88: invokevirtual #304                // Method java/lang/Double.doubleValue:()D
+      91: aload_2
+      92: getfield      #233                // Field desiredBrakePressure:Ljava/lang/Double;
+      95: invokevirtual #304                // Method java/lang/Double.doubleValue:()D
+      98: dsub
+      99: invokestatic  #117                // Method java/lang/Math.abs:(D)D
+     102: ldc2_w        #305                // double 0.001d
+     105: dcmpg
+     106: ifge          132
+     109: aload_0
+     110: getfield      #267                // Field independentBrakePosition:D
+     113: aload_2
+     114: getfield      #267                // Field independentBrakePosition:D
+     117: dsub
+     118: invokestatic  #117                // Method java/lang/Math.abs:(D)D
+     121: ldc2_w        #300                // double 0.01d
+     124: dcmpg
+     125: ifge          132
+     128: iconst_1
+     129: goto          133
+     132: iconst_0
+     133: ireturn
+     134: iconst_0
+     135: ireturn
+
+  public double tractiveEffortNewtons(cam72cam.immersiverailroading.util.Speed);
+    Code:
+       0: aload_0
+       1: getfield      #213                // Field tractiveEffortNewtons:Ljava/util/function/Function;
+       4: aload_1
+       5: invokeinterface #313,  2          // InterfaceMethod java/util/function/Function.apply:(Ljava/lang/Object;)Ljava/lang/Object;
+      10: checkcast     #227                // class java/lang/Double
+      13: invokevirtual #304                // Method java/lang/Double.doubleValue:()D
+      16: dreturn
+
+  private static java.lang.Double lambda$new$1(cam72cam.immersiverailroading.util.Speed);
+    Code:
+       0: dconst_0
+       1: invokestatic  #231                // Method java/lang/Double.valueOf:(D)Ljava/lang/Double;
+       4: areturn
+
+  private cam72cam.mod.entity.boundingbox.IBoundingBox lambda$new$0(cam72cam.immersiverailroading.entity.EntityCoupleableRollingStock, double, cam72cam.immersiverailroading.entity.physics.SimulationState);
+    Code:
+       0: aload_1
+       1: invokevirtual #83                 // Method cam72cam/immersiverailroading/entity/EntityCoupleableRollingStock.getDefinition:()Lcam72cam/immersiverailroading/registry/EntityRollingStockDefinition;
+       4: aload         4
+       6: getfield      #318                // Field cam72cam/immersiverailroading/entity/physics/SimulationState.yaw:F
+       9: aload_0
+      10: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      13: invokevirtual #322                // Method cam72cam/immersiverailroading/registry/EntityRollingStockDefinition.getBounds:(FLcam72cam/immersiverailroading/library/Gauge;)Lcam72cam/immersiverailroading/util/RealBB;
+      16: aload         4
+      18: getfield      #326                // Field cam72cam/immersiverailroading/entity/physics/SimulationState.position:Lcam72cam/mod/math/Vec3d;
+      21: dconst_0
+      22: aload         4
+      24: getfield      #326                // Field cam72cam/immersiverailroading/entity/physics/SimulationState.position:Lcam72cam/mod/math/Vec3d;
+      27: getfield      #331                // Field cam72cam/mod/math/Vec3d.y:D
+      30: aload         4
+      32: getfield      #326                // Field cam72cam/immersiverailroading/entity/physics/SimulationState.position:Lcam72cam/mod/math/Vec3d;
+      35: getfield      #331                // Field cam72cam/mod/math/Vec3d.y:D
+      38: invokestatic  #334                // Method java/lang/Math.floor:(D)D
+      41: dsub
+      42: dneg
+      43: dload_2
+      44: dsub
+      45: dconst_0
+      46: invokevirtual #338                // Method cam72cam/mod/math/Vec3d.add:(DDD)Lcam72cam/mod/math/Vec3d;
+      49: invokevirtual #344                // Method cam72cam/immersiverailroading/util/RealBB.offset:(Lcam72cam/mod/math/Vec3d;)Lcam72cam/immersiverailroading/util/RealBB;
+      52: new           #328                // class cam72cam/mod/math/Vec3d
+      55: dup
+      56: dconst_0
+      57: dconst_0
+      58: ldc2_w        #345                // double 0.5d
+      61: aload_0
+      62: getfield      #73                 // Field gauge:Lcam72cam/immersiverailroading/library/Gauge;
+      65: invokevirtual #351                // Method cam72cam/immersiverailroading/library/Gauge.scale:()D
+      68: dmul
+      69: invokespecial #354                // Method cam72cam/mod/math/Vec3d."<init>":(DDD)V
+      72: invokevirtual #357                // Method cam72cam/immersiverailroading/util/RealBB.contract:(Lcam72cam/mod/math/Vec3d;)Lcam72cam/immersiverailroading/util/RealBB;
+      75: areturn
+}

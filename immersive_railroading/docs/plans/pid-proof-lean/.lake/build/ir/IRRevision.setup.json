@@ -1,0 +1,9 @@
+{"plugins": [],
+ "package": "ir-proof",
+ "options": {},
+ "name": "IRRevision",
+ "isModule": false,
+ "importArts":
+ {"IRProof":
+  [["/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRProof.olean"]]},
+ "dynlibs": []}

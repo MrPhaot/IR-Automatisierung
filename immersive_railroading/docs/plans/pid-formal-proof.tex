@@ -1,0 +1,504 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=22mm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,longtable,array}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\newcommand{\Lean}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\bytecode}{\textsf{bytecode fact}}
+\newcommand{\derived}{\textsf{derived from bytecode}}
+\newcommand{\model}{\textsf{certified model assumption}}
+\newcommand{\runtime}{\textsf{runtime contract}}
+\newcommand{\obligation}{\textsf{future Lua implementation obligation}}
+\title{Geometry- and Physics-Guided IR Train Proof Contract}
+\author{Immersive Railroading 1.11.0 / Minecraft 1.7.10}
+\date{2026-08-16}
+
+\begin{document}
+\sloppy
+\setlength{\tabcolsep}{2pt}
+\setlength{\emergencystretch}{3em}
+\hfuzz=100pt
+\hbadness=10001
+\maketitle
+
+\begin{center}
+\fbox{\parbox{0.90\linewidth}{\centering
+\textbf{NOT\_READY}. This is a proof and implementation-contract artifact.
+The production Lua controller is unchanged. All previous PID proof,
+optimality, and readiness claims are withdrawn.}}
+\end{center}
+
+\tableofcontents
+
+\section{Authority, scope, and classifications}
+
+The authoritative specifications are \texttt{PLAN\_NEWPROOF.md} and its
+overriding supplement \texttt{PLAN\_NEWPROOF\_REVISION.md}. The proof target
+is a robust stopping and terminal-arrival contract for a directed station or
+signal. It is not a PID proof and it does not claim controller optimality.
+
+The source-connected funnel is:
+\[
+ \begin{gathered}
+ \text{tracer samples}\to\text{track-centre splines}\to\text{routing graph}\to\\
+ \text{detector profile}\to\text{front coupler}\to\text{combined command}\to\\
+ \text{IR plant}\to\text{arrival/holding}.
+ \end{gathered}
+\]
+The spline is geometric source of truth. The graph is only a routing
+abstraction and never fits or rewrites a spline. Every statement is labelled
+as one of: proved by Lean; \bytecode; \derived; \model; \runtime;
+\obligation; or unsupported/withdrawn.
+
+\section{Provenance and Java-8 source boundary}
+
+The extracted directory \texttt{immersive\_railroading/.cache/jar/} is
+authoritative. Its manifest identifies Minecraft 1.7.10, Immersive Railroading
+1.11.0, and \texttt{Multi-Release: true}. Root class files have major version
+52 (Java 8); \texttt{META-INF/versions/16} classes have major version 60 and
+are excluded. Root class and complete decompiler-input hashes are recorded in
+\texttt{pid-jar-manifest.md}; the six-input reproducibility check is recorded
+in \texttt{pid-physics-contract-manifest.sha256}. The exact branch ledger is
+in \texttt{pid-bytecode-traceability.md}.
+
+The root \texttt{javap -p -c} evidence establishes the following boundaries:
+\begin{itemize}
+ \item \texttt{CommonAPI.info()} provides dynamic identity, definition,
+ weight, speed, direction, brake/control, and locomotive fields;
+ \texttt{consist()} is aggregate validation only.
+ \item The detector manager emits \texttt{ir\_train\_overhead} with a stock
+ UUID, and detector \texttt{info()} delegates through the API.
+ \item \texttt{EntityRollingStock} position is not proved to be the F3
+ hitbox or rail centreline. \texttt{SimulationState.Configuration} and
+ \texttt{calculateCouplerPositions()} consume bogey, coupler, yaw, track,
+ mass, slack, and resistance data.
+ \item \texttt{CubicCurve.position()} is a cubic Bernstein expression;
+ \texttt{lengthWithCache()} samples derivatives and accumulates trapezoids.
+ \item \texttt{SimulationState.forcesNewtons()} computes signed grade plus
+ tractive effort. \texttt{frictionNewtons()} computes the resistance and
+ brake branches listed in Section~\ref{sec:physics}.
+ \item \texttt{SimulationState.next()} clones state, calls movement, has an
+ unchanged-position velocity-zero branch, recomputes couplers/collisions and
+ direct resistance. \texttt{Consist\$Particle} updates force, friction,
+ linkage, position, and velocity per particle.
+\end{itemize}
+
+\section{Trace-centre and spline model}
+
+\subsection{All reconstruction variables}
+
+The sample index is $i\in\mathbb{N}$. Each accepted tracer observation is
+\[
+ o_i=(t_i,r_i,u_i,h_i,\mathrm{uuid}_i,\mathrm{def}_i,
+      b_i,\alpha_i,\Delta\ell_i,\kappa_i,\epsilon_{float,i},
+      \epsilon_{missing,i},e_i),
+\]
+where $t_i$ is the tick, $r_i\in\mathbb{R}^3$ is raw \texttt{getPos()},
+$u_i$ is speed, $h_i$ is heading/orientation, $b_i$ is the compact tracer
+bogey/reference offset, $\alpha_i\geq0$ is observation age,
+$\Delta\ell_i\geq0$ is sampling spacing, $\kappa_i\geq0$ is a curvature
+bound, $\epsilon_{float,i}\geq0$ is numeric error,
+$\epsilon_{missing,i}\geq0$ is missing/delayed-observation error, and
+$e_i\in\mathbb{R}^3$ is the measured residual. The centre estimate and bound
+are
+\[
+ c_i=r_i+b_i,\qquad
+ \epsilon_{trace,i}=\Delta\ell_i\kappa_i+epsilon_{float,i}
+                         +\epsilon_{missing,i},qquad
+ c_i^{actual}=c_i+e_i,\quad\|e_i\|_1\leq\epsilon_{trace,i}.
+\]
+The front coupler is absent from this record. It is a stopping reference only.
+The offset, validity, and residual are a \model{} and \runtime{} boundary
+until the future sampler supplies them; raw position is never silently reused.
+
+For stable spline ID $j$, define four controls
+$P_{j,0},P_{j,1},P_{j,2},P_{j,3}\in\mathbb{R}^3$ and
+\[
+ \sigma_j(t)=(1-t)^3P_{j,0}+3(1-t)^2tP_{j,1}
+       +3(1-t)t^2P_{j,2}+t^3P_{j,3},\quad 0\leq t\leq1.
+\]
+The stored variables are
+\[
+ S_j=(j,P_{j,0:3},A_j,L_j,\tau_j,g_j,\kappa_j,
+      \epsilon_{fit,j},T_j,M_j),
+\]
+where $A_j$ is a monotone arc-length table, $L_j>0$ is total length,
+$\tau_j$ is tangent, $g_j$ is grade, $\kappa_j$ is curvature or a bound,
+$\epsilon_{fit,j}\geq0$ is fitting error, $T_j$ is the list of source trace
+IDs, and $M_j$ is optional builder metadata. Straight track is a degenerate
+cubic. IR turns are not called exact circles: the root turn implementation
+uses a cubic approximation.
+
+For each observation, the fit stores a parameter $q_i\in[0,1]$ and requires
+\[
+ \|c_i-\sigma_j(q_i)\|_1
+ \leq\epsilon_{fit,j}+\epsilon_{trace,i}.
+\]
+The producer \Lean{validatedSplineProducer} returns a validated spline only
+when IDs, length, fit error, source traces, all observations, parameter rows,
+and residual rows pass. Thus the theorem does not accept an arbitrary caller
+certificate as proof of its own validity.
+
+\subsection{Incremental reconstruction and topology}
+
+For a new trace and existing spline, the match record is
+\[
+ m=(d_3,d_\tau,d_\kappa,d_s;\delta_3,\delta_\tau,
+    \delta_\kappa,\delta_s,h,\delta_h),
+\]
+where the first four values are 3-D position, tangent, curvature, and
+arc-coordinate discrepancies, and the deltas are certified thresholds. A
+match requires all four 3-D/arc inequalities; 2-D projection intersection is
+never enough. The topology class is one of continuation, extension, split,
+overlap, shared connection, isolated crossing, overpass, new geometry, or
+unresolved. A same-level pair whose paths both continue without connection is
+an isolated crossing. A height separation greater than tolerance is an
+overpass. Both preserve separate paths and are not routable. Unresolved
+branches remain unavailable; manual classification is an explicit later
+transition, never a silent guess.
+
+The implementable state transition is:
+\begin{enumerate}
+ \item validate observations and construct $c_i$ and its residual terms;
+ \item fit and validate the cubic, arc marks, reverse controls, length,
+ tangent, grade, curvature, and fit error;
+ \item compare against existing splines using all 3-D/arc metrics;
+ \item classify the topology, preserving unresolved/crossing/overpass state;
+ \item commit only validated spline/source metadata and revision;
+ \item rebuild the graph from validated spline IDs and explicit connections.
+\end{enumerate}
+This is the \model{} and \obligation{} for the future persistent mapper.
+
+\section{Routing graph, stations, signals, and active routes}
+
+At graph revision $r_G$, define $G_{r_G}=(V_{r_G},E_{r_G})$. A vertex is
+$v=(id,j,s)$ with $0\leq s\leq L_j$. A directed edge is
+\[
+ e=(id_e,j,s_0,s_1,o,v_a,v_b),\qquad o\in\{+1,-1\},
+\]
+referencing a validated spline ID and arc interval. A physical spline normally
+produces symmetric forward and reverse edges. A connection record is explicit
+evidence between validated endpoints; it is not inferred from a projected
+crossing.
+
+A marker is
+\[
+ m=(id_m,p_m,\delta_m,a_m,k_m),
+\]
+where $p_m$ is its world point, $\delta_m$ is mapping tolerance, $a_m$ is
+exactly one permitted approach orientation, and $k_m$ is station or signal
+kind. The closest spline candidate is accepted only when distance is within
+$\delta_m$ and $0\leq s_m\leq L_j$. The opposite approach requires a separate
+marker configuration.
+
+An active route is $R=(r_G,S_R,V_R,E_R,O_R)$. It validates only its referenced
+splines, vertices, edges, intervals, endpoint sequence, orientation, and the
+current graph revision. It does not scan the whole graph. The graph-network
+producer consumes candidate traces, invokes the validated spline producer for
+each candidate, and rejects empty or duplicate stable identifiers rather than
+silently aliasing geometry. A changed active section
+invalidates $R$, invokes route finding against the latest graph, and fails
+closed with a report if no route exists. The Lean producers are
+\Lean{directedMarkerProducer}, \Lean{routingGraphProducer},
+\Lean{graphNetworkProducer}, \Lean{routeReferencesGraph}, and
+\Lean{routeDecision}.
+
+\section{Detector profile and source-separated data}
+
+For each \texttt{ir\_train\_overhead} event, record $u_k=$\texttt{stock\_uuid}
+and immediately call detector \texttt{info()}. The ordered record is
+\[
+ q_k=(u_k,d_k,w_k,v_k,a_k,b^{train}_k,b^{ind}_k,T_k,C_k,
+      \eta^{sys}_k,\eta^{adh}_k,\mu^{shoe}_k),
+\]
+containing UUID, definition ID, weight, direction, speed, both brake channels,
+traction $T$, cogging $C$, brake-system and adhesion efficiencies, and shoe
+friction when available. Dynamic \texttt{info()} data, static definition data,
+global configuration, and runtime certificates are separate records.
+\texttt{consist()} validates aggregate information only. The catalogue is
+immutable during a run; UUID/order/definition/weight/brake mismatch reports,
+stops, and requires recataloguing. Initial catalogue speed is approximately
+10 km/h; a higher value requires a bound derived from detector length,
+minimum spacing, event latency, and \texttt{info()} response time.
+
+The Lean boundary is \Lean{catalogueProducer}\,$\to$\Lean{StockRecord}
+$\to$\Lean{FrozenProfile}\,$\to$\Lean{sourcePhysicsRecordFromProfile}.
+Missing info, missing static fields, missing global fields, and definition
+mismatch return \texttt{none}; no neutral physical default is introduced.
+
+\section{Directed front-coupler coordinate}
+
+Choose the spline orientation permitted by the station/signal marker and let
+$s$ increase in that direction. If $s_{fc}$ is the front-coupler coordinate,
+then
+\[
+ x=s_{target}-s_{fc},\qquad v_s=\frac{d s_{fc}}{dt}.
+\]
+The stopping theorem is entered only for $x>0$ and $v_s>0$. Wrong-way motion,
+target crossing, stale data, invalid localization, and unavailable route
+orientation are recovery or fail-closed states.
+
+If $s_c$ is the tracer-centre coordinate and $\delta_{fc}$ is the signed
+definition/coupler offset in the selected orientation, the localization record
+is
+\[
+ (s_c,\delta_{fc},s_{fc}=s_c+\delta_{fc},\epsilon_{fc}).
+\]
+The producer \Lean{frontCouplerLocalizationProducer} consumes a validated
+spline, a complete coupler definition, and a centre error. Raw \texttt{getPos()}
+and a model hitbox are not substitutes. Reverse orientation reverses the
+directed velocity and selects reverse offsets.
+
+\section{IR physics derivation}\label{sec:physics}
+
+\subsection{Source records and constants}
+
+The exact source record contains current mass $m$, design mass $m_d$, pitch
+$\theta$ and separately supplied $\sin(\theta)$, slope multiplier $M_s$,
+tractive effort $T$, rolling coefficient $c_r$, speed-retarder resistance
+$R_s$, direct coefficient $c_d$, interference $I$, block hardness $H$, train
+pressure $p_t$, independent pressure $p_i$, brake-system efficiency $\eta_s$,
+adhesion efficiency $\eta_a$, global multiplier $\beta$, velocity $v$, shoe
+coefficient $\mu_{shoe}$, and cogging flag. The Java bytecode evaluates the
+sine; the rational model requires the runtime adapter to provide it rather
+than replacing it by zero.
+
+The source constants are
+\[
+ \mu_{steel}^{static}=0.70=\frac7{10},\quad
+ \mu_{steel}^{kinetic}=0.42=\frac{21}{50},\quad
+ \mu_{steel/castiron}^{kinetic}=0.25=\frac14,
+ \quad g=9.8=\frac{49}{5}.
+\]
+The cast-iron value is recorded as a material-definition fact and source
+field. The inspected \texttt{SimulationState.frictionNewtons()} wheel-slip
+branch invokes steel/steel kinetic friction, so the proof does not silently
+substitute $0.25$ into that branch. Cogging overrides for brake-system and
+adhesion efficiency are recorded as bytecode facts, not inferred defaults.
+
+\subsection{Line-by-line force ledger}
+
+The root bytecode first gives signed grade and traction:
+\[
+ F_g=m(-g)\sin(\theta)M_s,
+ \qquad F_T=T.
+\]
+The configuration constructor derives
+\[
+ A_d=m_d\,\mu_{steel}^{static}\,g\,\eta_s,
+ \qquad A_{max}=m\,\mu_{steel}^{static}\,g\,\eta_a.
+\]
+The friction method then performs, in order,
+\begin{align*}
+ p&=\min(1,\max(p_t,p_i)),\\
+ F_{candidate}&=A_d p,\\
+ F_{roll}&=c_r m g,\\
+ F_{zero}&=\begin{cases}0.001mg&v=0,\\0&v\ne0,\end{cases}\\
+ F_{int}&=I\,1000\,H,\\
+ F_{direct}&=R_s+c_d p_i m g+c_d p_t m g,\\
+ F_{shoe}&=\begin{cases}m\mu_{steel}^{kinetic}&F_{candidate}>A_{max}\land|v|>0.01,\\F_{candidate}&\text{otherwise},\end{cases}\\
+ F_{brake}&=\beta F_{shoe},\\
+ F_{net}&=F_g+F_T-(F_{roll}+F_{zero}+F_{direct}+F_{int}+F_{brake}).
+\end{align*}
+The root wheel-slip branch also sets its sliding state. API command values are
+validated and normalized at a separate boundary; the root physical pressure
+branch itself is the upper clamp shown above. This distinction preserves both
+the source equation and fail-closed command conversion.
+
+The Lean structure \Lean{ExactForceLedger} stores every summand and source
+reference. \Lean{source\_force\_ledger\_equation} proves the signed sum and
+\Lean{source\_wheel\_slip\_changes\_branch} proves the slip branch. A
+missing source field returns \texttt{none}; no field is replaced with zero.
+
+\subsection{Particle aggregation}
+
+For each particle $k$, the source-shaped transition stores state, interacting
+mass $m_k$, interacting friction $f_k$, previous/next linkage, push/pull
+capability, slack, collision observation, and track-transition observation.
+The selected friction is direction-aware and capped by force magnitude; the
+model update is
+\[
+ a_k=\frac{F_k-\operatorname{signedFriction}_k}{m_k},\quad
+ s'_k=s_k+v_k\Delta t,\quad v'_k=v_k+a_k\Delta t,
+\]
+followed by linkage distance correction. \Lean{sourceParticleTransition}
+rejects invalid mass/linkage and \Lean{sourceConsistTransition} preserves
+per-particle order. This is a conservative source-shaped model; complete
+Java collision, track lookup, pressure propagation, and all linkage branches
+remain a refinement obligation.
+
+\section{Combined command and plant transition}
+
+The command is
+\[
+ u=(u_T,u_{train},u_{ind},u_E,\alpha_{cmd},\alpha_{pressure}),
+\]
+with throttle, train brake, independent brake, emergency state, command age,
+and pressure age. The controller path is explicitly
+\[
+ \begin{aligned}
+ &\text{spline localization}\to(x,v_s)\to
+ (m,L,\kappa,\text{slack},\text{push/pull})\to u_T\\
+ &\to(u_{train},u_{ind},u_E)\to F_{net}\to\text{particle step}
+ \to\text{next state}.
+ \end{aligned}
+\]
+Positive throttle is not assumed zero after stopping commitment. It is included
+in the positive-traction upper bound. \Lean{apiCommandProducer} rejects
+nonfinite and out-of-range raw values, \Lean{exactCommandPhysics} constructs
+the command-modified exact ledger, and \Lean{exactPlantTransition} applies
+that ledger to a discrete state transition. \Lean{api\_command\_to\_exact\_plant}
+connects the raw API producer to existence of a next state. Invalid command or
+linkage input is \texttt{none}; this is the fail-closed path.
+
+Saturation and slew are represented as explicit command/runtime fields to be
+implemented and measured. They may not be omitted because they are inconvenient.
+
+\section{Uniform guard, safety, arrival, and holding}
+
+Let $B_{min}$ be a lower brake-force bound valid over every declared source
+branch and profiled particle. It must already account for rolling/direct/
+interference/near-zero behavior, wheel slip, material/efficiency branches, and
+consist aggregation. Let $T_{max}$ bound positive traction, and let
+$G_{max},K_{max},S_{max},P_{max}$ bound adverse grade, curvature, slack, and
+push/pull forces. For mass $m>0$,
+\[
+ a_{min}=\frac{B_{min}-T_{max}-G_{max}-K_{max}-S_{max}-P_{max}}{m}>0.
+\]
+The delay budget is
+\[
+ \tau=\tau_{sample}+\tau_{command}+\tau_{pressure}
+       +\tau_{detector}+\tau_{route},
+\]
+where jar-internal next-branch timing is deterministic source evidence and
+the other terms are measured runtime contracts. For distance $d$, speed $v$,
+localization error $e_g$, and terminal tolerance $e_t$, the terminal-entry
+guard is
+\[
+ d>0,\quad v>0,\quad a_{min}>0,\quad
+ d\geq v\tau+\frac{G_{max}+K_{max}+S_{max}+P_{max}}{2m}\tau^2
+       +\frac{v^2}{2a_{min}}+e_g+e_t.
+\]
+It includes delay distance, adverse delayed motion, stopping distance,
+geometry error, and terminal tolerance. \Lean{terminalGuard} rejects wrong
+way, crossed target, and nonpositive-deceleration inputs.
+
+The safety envelope is $d\geq0$, $v\geq0$, and $v^2\leq2a_{min}d$.
+\Lean{arrival\_step\_preserves\_no\_crossing} and
+\Lean{arrival\_run\_velocity\_nonincreasing} prove the explicit rational
+discrete claims. Terminal arrival is separate:
+\Lean{terminal\_arrival\_step} and
+\Lean{terminal\_arrival\_step\_position} prove $v_s=0$ and $x=0$ for the
+certified terminal step. Runtime acceptance additionally requires
+\[
+ |v_s|\leq\epsilon_v,\qquad |x|\leq\epsilon_{stop},
+ \qquad\text{stable for }N_{stable}\text{ observations}.
+\]
+The position tolerance is derived, not chosen for convenience:
+\[
+ \epsilon_{stop}\geq\epsilon_{trace}+\epsilon_{fit}+epsilon_{coupler}
+ +\epsilon_{sample-age}+\epsilon_{command-delay}+\epsilon_{numeric}.
+\]
+Holding uses the actual IR condition
+$v_s=0\land|F|<F_{friction}$, not merely zero command or zero force.
+\Lean{holdingTransition} preserves position and zero velocity under that
+condition. Stable acceptance is a runtime contract, not a certificate that
+the unchanged Lua already observes the required window.
+
+\section{Producer/consumer theorem inventory}
+
+\tiny
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.23\linewidth}
+                  >{\raggedright\arraybackslash}p{0.30\linewidth}
+                  >{\raggedright\arraybackslash}p{0.40\linewidth}}
+\toprule
+Arrow & Producer and consumer & Lean relation and classification \\
+\midrule
+Trace $\to$ spline & observations/residuals $\to$ validated spline &
+\Lean{validated\_spline\_trace\_fit\_is\_checked}; proved by Lean under trace model \\
+Spline $\to$ graph & validated spline/candidates $\to$ directed edge/network &
+\Lean{validated\_spline\_to\_directed\_routing\_edge},
+\Lean{graph\_network\_consumes\_only\_source\_validated\_splines}; proved by Lean \\
+Graph/profile $\to$ localization & route/marker/definition $\to$ front coupler &
+\Lean{marker\_maps\_to\_valid\_spline\_interval}, \Lean{coupler\_localization\_consumes\_validated\_spline}; proved by Lean \\
+Profile $\to$ physics & dynamic/static/config/runtime $\to$ exact source input &
+\Lean{source\_profile\_physics\_preserves\_mass\_and\_channels}; derived/ proved \\
+Command $\to$ plant & numeric/API command $\to$ exact ledger/next state &
+\Lean{api\_command\_to\_exact\_plant}, \Lean{exact\_plant\_has\_source\_next\_state}; conditional model \\
+Plant $\to$ arrival & force/transition $\to$ guard, safety, terminal acceptance &
+\Lean{arrival\_step\_preserves\_no\_crossing}, terminal theorems, stable contract; conditional model \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\subsection{Required spline-to-edge proof}
+
+The theorem \Lean{validated\_spline\_to\_directed\_routing\_edge} takes the
+producer equality
+\Lean{validatedSplineProducer c = some v}, orientation $o$, parameter $t$,
+error $\epsilon$, point $q$, interval premise $0\leq t\leq1$, and pointwise
+premise $\|q-\sigma_c(t)\|_1\leq\epsilon$. It proves the same stable spline
+ID, both forward/reverse endpoint correspondences, the directed coordinate
+mapping, point correspondence through the reverse cubic, source trace IDs,
+and preservation of the localization inequality. It depends on
+\Lean{traceFitRowsValid}, \Lean{splineCandidateValid},
+\Lean{validatedSplineProducer}, \Lean{cubicReverse},
+\Lean{cubic\_reverse\_position}, \Lean{edgeCoordinate},
+\Lean{directedCoordinateOfParameter}, \Lean{edgePointAt}, and
+\Lean{directedEdge}. Its transitive \texttt{\#print axioms} output is
+\texttt{[propext, Classical.choice, Quot.sound]}. The tests mutate direction,
+interval, fit row, and spline ID.
+
+\section{Anti-cheating audit and gate result}
+
+The audit applies the thirteen base anti-cheating classes and the revision's
+additional checks: no forbidden proof escape; no vacuous producer; no
+specialized example promoted to a theorem; no equation mismatch; no
+disconnected definition; no controller-shaped optimality; no sign/dimensional
+error; no temporal under-approximation; no API/refinement alias; no
+provenance drift; no rational/floating conflation; no safety/liveness scope
+confusion; and meaningful negative/mutation tests. Additional audit checks
+reject optimistic defaults, self-authenticated certificates, and fake
+transition aliases.
+
+Gates A--H pass only at the explicit proof/contract boundary and are marked
+conditional where live source or timing evidence is required. Gate I is
+\textbf{NOT\_READY}: full Lua source adapters, measured external timing,
+complete Java linkage/collision refinement, and a live mutation harness remain
+future obligations. No gate is marked passed merely because Lean or LaTeX
+compiles.
+
+\section{Implementation contract and readiness}
+
+The future Lua implementation must persist trace/spline/topology records,
+derive the graph only from validated splines, map directed markers, catalogue
+each detector stock immediately, freeze and validate the profile, localize the
+front coupler, send all command channels together, certify the complete
+uniform force/delay bound, implement stable terminal holding, and fail closed
+with diagnostics on every missing or mutated input. It must run the vectors
+against curved, slack, push/pull, adhesion-limited, wheel-slip, detector-delay,
+route-mutation, and profile-mutation scenarios.
+
+The final classification is:
+\begin{itemize}
+ \item Lean relations and exact vectors: \textbf{proved by Lean} under their
+ explicit premises;
+ \item root equations, constants, versions, classes, and branch locations:
+ \textbf{derived from bytecode} or bytecode facts;
+ \item trace residual, arc-length approximation, physical force bounds,
+ curvature/slack/push-pull bounds: \textbf{certified model assumptions};
+ \item detector delivery, profile immutability, numeric conversion, timing,
+ route revision, diagnostics, and fail-closed behavior: \textbf{runtime
+ contracts};
+ \item persistent geometry/profile/controller/plant integration and live
+ mutation tests: \textbf{future Lua implementation obligations};
+ \item PID optimality, exact floating-point correctness, complete Java
+ linkage/collision identity, and deployment approval: \textbf{unsupported or
+ withdrawn}.
+\end{itemize}
+
+\begin{center}
+\fbox{\textbf{NOT\_READY -- not approved for user deployment}}
+\end{center}
+
+\end{document}

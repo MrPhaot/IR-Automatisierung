@@ -100,7 +100,7 @@ function M.resolve_entry_station_id(route_book, entry)
   return station_id
 end
 
-function M.validate_condition(route_book, station_id, condition, allowed_outputs)
+function M.validate_condition(route_book, station_id, condition, allowed_outputs, entry_station_ids)
   local errors = {}
   if type(condition) ~= "table" then
     errors[#errors + 1] = "condition must be a table"
@@ -110,6 +110,12 @@ function M.validate_condition(route_book, station_id, condition, allowed_outputs
   if condition.type == "time_passed" or condition.type == "inactivity" then
     if type(condition.seconds) ~= "number" or condition.seconds < 0 then
       errors[#errors + 1] = ("%s requires seconds >= 0"):format(condition.type)
+    end
+  elseif condition.type == "arrived_at_station" then
+    if type(condition.station) ~= "string" or condition.station == "" then
+      errors[#errors + 1] = "arrived_at_station requires a non-empty station"
+    elseif entry_station_ids and not entry_station_ids[condition.station] then
+      errors[#errors + 1] = ("arrived_at_station station %s is not in schedule entries"):format(condition.station)
     end
   elseif DETECTOR_TYPES[condition.type] then
     if not VALID_COMPARATORS[condition.comparator] then
@@ -199,6 +205,7 @@ function M.validate(route_book, schedule_name)
         warnings[#warnings + 1] = ("schedule %s has no entries"):format(name)
       end
       local allowed_outputs = {}
+      local entry_station_ids = {}
       for _, entry in ipairs(schedule.entries or {}) do
         local sid = M.resolve_entry_station_id(route_book, entry)
         local station = sid and route_book.STATIONS[sid]
@@ -206,6 +213,7 @@ function M.validate(route_book, schedule_name)
           for output_name in pairs(station.redstone_outputs or {}) do
             allowed_outputs[output_name] = true
           end
+          entry_station_ids[sid] = true
         end
       end
       for index, entry in ipairs(schedule.entries or {}) do
@@ -247,7 +255,7 @@ function M.validate(route_book, schedule_name)
                   errors[#errors + 1] = ("schedule %s entry %d wait group %d must contain conditions"):format(name, index, group_index)
                 else
                   for condition_index, condition in ipairs(group) do
-                    for _, message in ipairs(M.validate_condition(route_book, station_id, condition, allowed_outputs)) do
+                    for _, message in ipairs(M.validate_condition(route_book, station_id, condition, allowed_outputs, entry_station_ids)) do
                       errors[#errors + 1] = ("schedule %s entry %d group %d condition %d: %s"):format(
                         name,
                         index,
@@ -283,6 +291,15 @@ function M.validate(route_book, schedule_name)
                       )
                     end
                   end
+                  local rule_signal = tostring(rule.signal or "")
+                  if rule_signal ~= "" and rule_signal ~= "pulse" and rule_signal ~= "constant" then
+                    errors[#errors + 1] = ("schedule %s entry %d redstone rule %d signal must be pulse or constant"):format(name, index, rule_index)
+                  end
+                  if rule.pulse_ticks ~= nil then
+                    if type(rule.pulse_ticks) ~= "number" or rule.pulse_ticks < 1 then
+                      errors[#errors + 1] = ("schedule %s entry %d redstone rule %d pulse_ticks must be a number >= 1"):format(name, index, rule_index)
+                    end
+                  end
                   if type(rule.groups) ~= "table" or #rule.groups == 0 then
                     errors[#errors + 1] = ("schedule %s entry %d redstone rule %d requires groups"):format(name, index, rule_index)
                   else
@@ -301,7 +318,7 @@ function M.validate(route_book, schedule_name)
                             plain_condition[key] = value
                           end
                           plain_condition.redstone = nil
-                          for _, message in ipairs(M.validate_condition(route_book, station_id, plain_condition, allowed_outputs)) do
+                           for _, message in ipairs(M.validate_condition(route_book, station_id, plain_condition, allowed_outputs, entry_station_ids)) do
                             errors[#errors + 1] = ("schedule %s entry %d redstone rule %d group %d condition %d: %s"):format(
                               name,
                               index,
@@ -371,6 +388,7 @@ function M.create_wait_session(route_book, station_id, wait, detector_reader)
     last_activity_at = nil,
     last_metrics = {},
     completed = false,
+    _rule_complete = {},
   }
 end
 
@@ -380,6 +398,8 @@ local function evaluate_condition(session, condition, detector_snapshots, now)
     complete = (now - session.started_at) >= condition.seconds
   elseif condition.type == "inactivity" then
     complete = (now - session.last_activity_at) >= condition.seconds
+  elseif condition.type == "arrived_at_station" then
+    complete = session.station_id == tostring(condition.station or "")
   else
     local detector_ids = resolve_detector_ids(session.route_book, session.station, condition)
     local samples = {}
@@ -447,6 +467,7 @@ function M.tick_wait_session(session, now)
   local detector_snapshots = session.detector_reader(session.station.detector_ids or {})
   local pending_outputs = {}
   local departure_pulses = {}
+  local arrival_pulses = {}
   local groups_complete = false
 
   for group_index, group in ipairs(session.wait.groups or {}) do
@@ -469,11 +490,23 @@ function M.tick_wait_session(session, now)
   end
 
   if not groups_complete then
-    for _, rule in ipairs(session.entry and session.entry.redstone and session.entry.redstone.rules or {}) do
+    for rule_index, rule in ipairs(session.entry and session.entry.redstone and session.entry.redstone.rules or {}) do
       if type(rule.output) == "string" and rule.output ~= "" then
-        if M.evaluate_rule_groups(rule.groups, session.station, detector_snapshots, session, now) then
+        local rule_complete = M.evaluate_rule_groups(rule.groups, session.station, detector_snapshots, session, now)
+        local rule_signal = tostring(rule.signal or "constant")
+        if rule_signal == "constant" and rule_complete then
           pending_outputs[rule.output] = true
         end
+        if rule_signal == "pulse" and rule_complete and not session._rule_complete[rule_index] then
+          local cfg = (session.station.redstone_outputs or {})[rule.output]
+          if cfg then
+            local pulse_cfg = {}
+            for k, v in pairs(cfg) do pulse_cfg[k] = v end
+            pulse_cfg.pulse_ticks = rule.pulse_ticks or cfg.pulse_ticks or 20
+            arrival_pulses[#arrival_pulses + 1] = {name = rule.output, config = pulse_cfg}
+          end
+        end
+        session._rule_complete[rule_index] = rule_complete
       end
     end
   end
@@ -493,6 +526,7 @@ function M.tick_wait_session(session, now)
     complete = groups_complete,
     pending_outputs = pending_outputs,
     departure_pulses = departure_pulses,
+    arrival_pulses = arrival_pulses,
     detector_snapshots = detector_snapshots,
     started_at = session.started_at,
     last_activity_at = session.last_activity_at,

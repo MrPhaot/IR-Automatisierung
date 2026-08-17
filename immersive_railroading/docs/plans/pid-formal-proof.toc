@@ -1,0 +1,18 @@
+\contentsline {section}{\numberline {1}Authority, scope, and classifications}{1}{section.1}%
+\contentsline {section}{\numberline {2}Provenance and Java-8 source boundary}{2}{section.2}%
+\contentsline {section}{\numberline {3}Trace-centre and spline model}{2}{section.3}%
+\contentsline {subsection}{\numberline {3.1}All reconstruction variables}{2}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Incremental reconstruction and topology}{3}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Routing graph, stations, signals, and active routes}{3}{section.4}%
+\contentsline {section}{\numberline {5}Detector profile and source-separated data}{3}{section.5}%
+\contentsline {section}{\numberline {6}Directed front-coupler coordinate}{4}{section.6}%
+\contentsline {section}{\numberline {7}IR physics derivation}{4}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Source records and constants}{4}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Line-by-line force ledger}{4}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Particle aggregation}{5}{subsection.7.3}%
+\contentsline {section}{\numberline {8}Combined command and plant transition}{5}{section.8}%
+\contentsline {section}{\numberline {9}Uniform guard, safety, arrival, and holding}{5}{section.9}%
+\contentsline {section}{\numberline {10}Producer/consumer theorem inventory}{6}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Required spline-to-edge proof}{6}{subsection.10.1}%
+\contentsline {section}{\numberline {11}Anti-cheating audit and gate result}{6}{section.11}%
+\contentsline {section}{\numberline {12}Implementation contract and readiness}{6}{section.12}%

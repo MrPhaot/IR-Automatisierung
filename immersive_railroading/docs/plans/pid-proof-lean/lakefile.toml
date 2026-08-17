@@ -1,0 +1,15 @@
+name = "ir-proof"
+version = "0.1.0"
+defaultTargets = ["IRProof", "IRCertifiedModel", "IRRevision", "IRRevisionTestVectors"]
+
+[[lean_lib]]
+name = "IRProof"
+
+[[lean_lib]]
+name = "IRCertifiedModel"
+
+[[lean_lib]]
+name = "IRRevision"
+
+[[lean_lib]]
+name = "IRRevisionTestVectors"

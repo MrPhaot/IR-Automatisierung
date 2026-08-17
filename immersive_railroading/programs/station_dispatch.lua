@@ -598,6 +598,9 @@ local function run(schedule_name, options)
         local tick = station_schedule.tick_wait_session(session, uptime())
         io_controller:update(station.redstone_outputs or {}, tick.pending_outputs)
         io_controller:tick(station.redstone_outputs or {})
+        for _, p in ipairs(tick.arrival_pulses or {}) do
+          io_controller:pulse(p.name, p.config)
+        end
         emit_event(logger, "schedule_wait_tick", {
           schedule = schedule_name,
           entry = index,

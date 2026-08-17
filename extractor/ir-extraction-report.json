@@ -1,0 +1,27 @@
+{
+  "artifact": "/home/mrphaot/Dokumente/lua/minecraft/extractor/ir-geometry-topology.json",
+  "complete": false,
+  "stats": {
+    "chunks_read": 10800,
+    "gags": 4168,
+    "geometry": {
+      "INVALID": 0,
+      "RECONSTRUCTED": 55
+    },
+    "parents": 55,
+    "region_files": 25,
+    "topology": {
+      "AMBIGUOUS": 47,
+      "CONNECTED": 0,
+      "DISCONNECTED": 0,
+      "INVALID": 0,
+      "UNTRACED": 16
+    }
+  },
+  "warnings": [
+    "overworld:35,69,399: switch branches reconstructed from saved settings; verify live BuilderSwitch branch placement",
+    "overworld:34,69,405: switch branches reconstructed from saved settings; verify live BuilderSwitch branch placement",
+    "overworld:652,67,-372: switch branches reconstructed from saved settings; verify live BuilderSwitch branch placement",
+    "overworld:658,67,-376: switch branches reconstructed from saved settings; verify live BuilderSwitch branch placement"
+  ]
+}

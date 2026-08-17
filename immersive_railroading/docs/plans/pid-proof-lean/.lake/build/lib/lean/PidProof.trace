@@ -1,0 +1,82 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["a60fb4f8f85d69ec.olean"],
+  "m": false,
+  "i": "1d1a99f764c1de63.ilean",
+  "c": "e4c98a4b00be3f2a.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean /home/mrphaot/.elan/toolchains/leanprover--lean4---v4.33.0/bin/lean /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/PidProof.lean -o /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/PidProof.olean -i /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/PidProof.ilean -c /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/ir/PidProof.c --setup /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/ir/PidProof.setup.json --json",
+   "level": "trace"},
+  {"message":
+   "PidProof.lean:392:35: This simp argument is unused:\n  allZeroTractive\n\nHint: Omit it from the simp argument list.\n  [apply] simp [sumBy, sumJavaBy]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:432:60: This simp argument is unused:\n  Rat.add_comm\n\nHint: Omit it from the simp argument list.\n  [apply] simp [Rat.sub_eq_add_neg, Rat.neg_add, Rat.add_assoc, Rat.add_left_comm]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:463:8: This simp argument is unused:\n  Rat.add_assoc\n\nHint: Omit it from the simp argument list.\n  [apply] simp [Consist.adverseBound, Consist.uniformBrake, Rat.sub_eq_add_neg, Rat.add_comm, Rat.add_left_comm]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:528:30: This simp argument is unused:\n  Rat.mul_neg\n\nHint: Omit it from the simp argument list.\n  [apply] simp [remainingDistance, targetDirectedVelocity, sideSign, Rat.sub_eq_add_neg, Rat.neg_add, Rat.neg_mul,\n    Rat.neg_neg, Rat.add_comm, Rat.add_left_comm, Rat.add_assoc]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:529:4: This simp argument is unused:\n  Rat.add_left_comm\n\nHint: Omit it from the simp argument list.\n  [apply] simp [remainingDistance, targetDirectedVelocity, sideSign, Rat.sub_eq_add_neg, Rat.neg_add, Rat.neg_mul,\n    Rat.mul_neg, Rat.neg_neg, Rat.add_comm, Rat.add_assoc]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:529:23: This simp argument is unused:\n  Rat.add_assoc\n\nHint: Omit it from the simp argument list.\n  [apply] simp [remainingDistance, targetDirectedVelocity, sideSign, Rat.sub_eq_add_neg, Rat.neg_add, Rat.neg_mul,\n    Rat.mul_neg, Rat.neg_neg, Rat.add_comm, Rat.add_left_comm]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:531:54: Variable name `target` is not explicitly referenced.\n\nHint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:\n  [apply] _target\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:531:61: Variable name `worldPosition` is not explicitly referenced.\n\nHint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:\n  [apply] _worldPosition\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:534:55: This simp argument is unused:\n  Rat.neg_mul\n\nHint: Omit it from the simp argument list.\n  [apply] simp [Rat.sub_eq_add_neg, Rat.zero_add, Rat.mul_neg, Rat.neg_neg]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:534:68: This simp argument is unused:\n  Rat.neg_neg\n\nHint: Omit it from the simp argument list.\n  [apply] simp [Rat.sub_eq_add_neg, Rat.zero_add, Rat.mul_neg, Rat.neg_mul]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:580:5: Variable name `ha` is not explicitly referenced.\n\nHint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:\n  [apply] _ha\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:621:5: Variable name `ha` is not explicitly referenced.\n\nHint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:\n  [apply] _ha\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:621:18: Variable name `hh` is not explicitly referenced.\n\nHint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:\n  [apply] _hh\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:621:31: Variable name `he` is not explicitly referenced.\n\nHint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:\n  [apply] _he\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:686:36: This simp argument is unused:\n  Rat.add_comm\n\nHint: Omit it from the simp argument list.\n  [apply] simp [iterateBraking, brakingTravel, brakingStep, ih, Rat.sub_eq_add_neg, Rat.neg_add, Rat.add_assoc,\n    Rat.add_left_comm]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:686:50: This simp argument is unused:\n  Rat.add_left_comm\n\nHint: Omit it from the simp argument list.\n  [apply] simp [iterateBraking, brakingTravel, brakingStep, ih, Rat.sub_eq_add_neg, Rat.neg_add, Rat.add_assoc,\n    Rat.add_comm]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"},
+  {"message":
+   "PidProof.lean:744:54: This simp argument is unused:\n  Rat.mul_add\n\nHint: Omit it from the simp argument list.\n  [apply] simp [closedLoopStep, matrixStep, closedLoopMatrix, Rat.add_mul, Rat.sub_eq_add_neg, Rat.mul_assoc,\n    Rat.neg_mul, Rat.add_zero]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`",
+   "level": "warning"}],
+ "inputs":
+ [["deps",
+   [["«pid-proof»/PidProof:extraDep",
+     [["@«pid-proof»:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.0, commit d8b18978322de05a8f3dba51ef03cf5461676c17",
+   "3eca9d16ab6c877d"],
+  ["/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/PidProof.lean",
+   "37087606e07f7ce6"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: PidProof", "71c0f52e627905b1"],
+  ["Package.id?: (some pid-proof)", "40d0a57d22393f29"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "27f7a685014631bf"}

@@ -1,0 +1,511 @@
+Compiled from "LocomotiveDefinition.java"
+public abstract class cam72cam.immersiverailroading.registry.LocomotiveDefinition extends cam72cam.immersiverailroading.registry.FreightDefinition {
+  public boolean toggleBell;
+
+  public cam72cam.immersiverailroading.registry.EntityRollingStockDefinition$SoundDefinition bell;
+
+  public java.lang.String works;
+
+  private double power_kW;
+
+  private double traction_N;
+
+  private cam72cam.immersiverailroading.util.Speed maxSpeed;
+
+  private boolean hasRadioEquipment;
+
+  public boolean muliUnitCapable;
+
+  private boolean isCabCar;
+
+  private boolean isLinkedBrakeThrottle;
+
+  private boolean isCog;
+
+  private double factorOfAdhesion;
+
+  cam72cam.immersiverailroading.registry.LocomotiveDefinition(java.lang.Class<? extends cam72cam.immersiverailroading.entity.EntityRollingStock>, java.lang.String, cam72cam.immersiverailroading.util.DataBlock) throws java.lang.Exception;
+    Code:
+       0: aload_0
+       1: aload_1
+       2: aload_2
+       3: aload_3
+       4: invokespecial #44                 // Method cam72cam/immersiverailroading/registry/FreightDefinition."<init>":(Ljava/lang/Class;Ljava/lang/String;Lcam72cam/immersiverailroading/util/DataBlock;)V
+       7: return
+
+  protected cam72cam.mod.resource.Identifier defaultDataLocation();
+    Code:
+       0: new           #56                 // class cam72cam/mod/resource/Identifier
+       3: dup
+       4: ldc           #58                 // String immersiverailroading
+       6: ldc           #60                 // String rolling_stock/default/locomotive.caml
+       8: invokespecial #63                 // Method cam72cam/mod/resource/Identifier."<init>":(Ljava/lang/String;Ljava/lang/String;)V
+      11: areturn
+
+  public void loadData(cam72cam.immersiverailroading.util.DataBlock) throws java.lang.Exception;
+    Code:
+       0: aload_0
+       1: aload_1
+       2: invokespecial #67                 // Method cam72cam/immersiverailroading/registry/FreightDefinition.loadData:(Lcam72cam/immersiverailroading/util/DataBlock;)V
+       5: aload_0
+       6: aload_1
+       7: ldc           #68                 // String works
+       9: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+      14: invokeinterface #76,  1           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asString:()Ljava/lang/String;
+      19: putfield      #78                 // Field works:Ljava/lang/String;
+      22: aload_1
+      23: ldc           #80                 // String properties
+      25: invokeinterface #84,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getBlock:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock;
+      30: astore_2
+      31: aload_0
+      32: aload_2
+      33: ldc           #86                 // String radio_equipped
+      35: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+      40: iconst_0
+      41: invokeinterface #90,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asBoolean:(Z)Z
+      46: putfield      #92                 // Field hasRadioEquipment:Z
+      49: aload_0
+      50: aload_0
+      51: aload_1
+      52: invokevirtual #96                 // Method readCabCarFlag:(Lcam72cam/immersiverailroading/util/DataBlock;)Z
+      55: putfield      #98                 // Field isCabCar:Z
+      58: aload_0
+      59: getfield      #98                 // Field isCabCar:Z
+      62: ifeq          95
+      65: aload_0
+      66: dconst_0
+      67: putfield      #100                // Field power_kW:D
+      70: aload_0
+      71: dconst_0
+      72: putfield      #102                // Field traction_N:D
+      75: aload_0
+      76: getstatic     #107                // Field cam72cam/immersiverailroading/util/Speed.ZERO:Lcam72cam/immersiverailroading/util/Speed;
+      79: putfield      #109                // Field maxSpeed:Lcam72cam/immersiverailroading/util/Speed;
+      82: aload_0
+      83: iconst_1
+      84: putfield      #111                // Field muliUnitCapable:Z
+      87: aload_0
+      88: dconst_0
+      89: putfield      #113                // Field factorOfAdhesion:D
+      92: goto          503
+      95: aload_2
+      96: ldc           #115                // String horsepower
+      98: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     103: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     108: ifnull        143
+     111: aload_0
+     112: aload_2
+     113: ldc           #115                // String horsepower
+     115: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     120: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     125: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     128: ldc           #126                // float 0.745701f
+     130: fmul
+     131: f2d
+     132: aload_0
+     133: getfield      #129                // Field internal_inv_scale:D
+     136: dmul
+     137: putfield      #100                // Field power_kW:D
+     140: goto          313
+     143: aload_2
+     144: ldc           #131                // String power_hp
+     146: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     151: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     156: ifnull        191
+     159: aload_0
+     160: aload_2
+     161: ldc           #131                // String power_hp
+     163: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     168: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     173: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     176: ldc           #126                // float 0.745701f
+     178: fmul
+     179: f2d
+     180: aload_0
+     181: getfield      #129                // Field internal_inv_scale:D
+     184: dmul
+     185: putfield      #100                // Field power_kW:D
+     188: goto          313
+     191: aload_2
+     192: ldc           #133                // String power_ps
+     194: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     199: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     204: ifnull        239
+     207: aload_0
+     208: aload_2
+     209: ldc           #133                // String power_ps
+     211: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     216: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     221: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     224: ldc           #134                // float 0.735498f
+     226: fmul
+     227: f2d
+     228: aload_0
+     229: getfield      #129                // Field internal_inv_scale:D
+     232: dmul
+     233: putfield      #100                // Field power_kW:D
+     236: goto          313
+     239: aload_2
+     240: ldc           #136                // String power_kw
+     242: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     247: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     252: ifnull        284
+     255: aload_0
+     256: aload_2
+     257: ldc           #136                // String power_kw
+     259: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     264: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     269: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     272: f2d
+     273: aload_0
+     274: getfield      #129                // Field internal_inv_scale:D
+     277: dmul
+     278: putfield      #100                // Field power_kW:D
+     281: goto          313
+     284: aload_0
+     285: aload_2
+     286: ldc           #138                // String power_w
+     288: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     293: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     298: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     301: ldc           #139                // float 1000.0f
+     303: fdiv
+     304: f2d
+     305: aload_0
+     306: getfield      #129                // Field internal_inv_scale:D
+     309: dmul
+     310: putfield      #100                // Field power_kW:D
+     313: aload_2
+     314: ldc           #141                // String tractive_effort_lbf
+     316: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     321: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     326: ifnull        361
+     329: aload_0
+     330: aload_2
+     331: ldc           #141                // String tractive_effort_lbf
+     333: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     338: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     343: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     346: ldc           #142                // float 4.448221f
+     348: fmul
+     349: f2d
+     350: aload_0
+     351: getfield      #129                // Field internal_inv_scale:D
+     354: dmul
+     355: putfield      #102                // Field traction_N:D
+     358: goto          435
+     361: aload_2
+     362: ldc           #144                // String tractive_effort_kn
+     364: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     369: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     374: ifnull        409
+     377: aload_0
+     378: aload_2
+     379: ldc           #144                // String tractive_effort_kn
+     381: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     386: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     391: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     394: ldc           #139                // float 1000.0f
+     396: fmul
+     397: f2d
+     398: aload_0
+     399: getfield      #129                // Field internal_inv_scale:D
+     402: dmul
+     403: putfield      #102                // Field traction_N:D
+     406: goto          435
+     409: aload_0
+     410: aload_2
+     411: ldc           #146                // String tractive_effort_n
+     413: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     418: invokeinterface #119,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asFloat:()Ljava/lang/Float;
+     423: invokevirtual #125                // Method java/lang/Float.floatValue:()F
+     426: f2d
+     427: aload_0
+     428: getfield      #129                // Field internal_inv_scale:D
+     431: dmul
+     432: putfield      #102                // Field traction_N:D
+     435: aload_0
+     436: aload_2
+     437: ldc           #148                // String factor_of_adhesion
+     439: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     444: ldc2_w        #149                // double 4.0d
+     447: invokeinterface #154,  3          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asDouble:(D)D
+     452: putfield      #113                // Field factorOfAdhesion:D
+     455: aload_0
+     456: aload_2
+     457: ldc           #156                // String max_speed_kmh
+     459: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     464: invokeinterface #159,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asDouble:()Ljava/lang/Double;
+     469: invokevirtual #165                // Method java/lang/Double.doubleValue:()D
+     472: aload_0
+     473: getfield      #129                // Field internal_inv_scale:D
+     476: dmul
+     477: invokestatic  #169                // Method cam72cam/immersiverailroading/util/Speed.fromMetric:(D)Lcam72cam/immersiverailroading/util/Speed;
+     480: putfield      #109                // Field maxSpeed:Lcam72cam/immersiverailroading/util/Speed;
+     483: aload_0
+     484: aload_2
+     485: ldc           #171                // String multi_unit_capable
+     487: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     492: invokeinterface #174,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asBoolean:()Ljava/lang/Boolean;
+     497: invokevirtual #180                // Method java/lang/Boolean.booleanValue:()Z
+     500: putfield      #111                // Field muliUnitCapable:Z
+     503: aload_0
+     504: aload_2
+     505: ldc           #181                // String isLinkedBrakeThrottle
+     507: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     512: invokeinterface #174,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asBoolean:()Ljava/lang/Boolean;
+     517: invokevirtual #180                // Method java/lang/Boolean.booleanValue:()Z
+     520: putfield      #183                // Field isLinkedBrakeThrottle:Z
+     523: aload_0
+     524: aload_2
+     525: ldc           #185                // String toggle_bell
+     527: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     532: invokeinterface #174,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asBoolean:()Ljava/lang/Boolean;
+     537: invokevirtual #180                // Method java/lang/Boolean.booleanValue:()Z
+     540: putfield      #187                // Field toggleBell:Z
+     543: aload_0
+     544: aload_2
+     545: ldc           #189                // String cog
+     547: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+     552: invokeinterface #174,  1          // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asBoolean:()Ljava/lang/Boolean;
+     557: invokevirtual #180                // Method java/lang/Boolean.booleanValue:()Z
+     560: putfield      #191                // Field isCog:Z
+     563: return
+
+  protected boolean readCabCarFlag(cam72cam.immersiverailroading.util.DataBlock);
+    Code:
+       0: aload_1
+       1: ldc           #80                 // String properties
+       3: invokeinterface #84,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getBlock:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock;
+       8: ldc           #193                // String cab_car
+      10: invokeinterface #72,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock.getValue:(Ljava/lang/String;)Lcam72cam/immersiverailroading/util/DataBlock$Value;
+      15: iconst_0
+      16: invokeinterface #90,  2           // InterfaceMethod cam72cam/immersiverailroading/util/DataBlock$Value.asBoolean:(Z)Z
+      21: ireturn
+
+  protected cam72cam.immersiverailroading.model.StockModel<?, ?> createModel() throws java.lang.Exception;
+    Code:
+       0: new           #198                // class cam72cam/immersiverailroading/model/LocomotiveModel
+       3: dup
+       4: aload_0
+       5: invokespecial #201                // Method cam72cam/immersiverailroading/model/LocomotiveModel."<init>":(Lcam72cam/immersiverailroading/registry/LocomotiveDefinition;)V
+       8: areturn
+
+  public java.util.List<java.lang.String> getTooltip(cam72cam.immersiverailroading.library.Gauge);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: invokespecial #206                // Method cam72cam/immersiverailroading/registry/FreightDefinition.getTooltip:(Lcam72cam/immersiverailroading/library/Gauge;)Ljava/util/List;
+       5: astore_2
+       6: aload_2
+       7: getstatic     #212                // Field cam72cam/immersiverailroading/library/GuiText.LOCO_WORKS:Lcam72cam/immersiverailroading/library/GuiText;
+      10: iconst_1
+      11: anewarray     #214                // class java/lang/Object
+      14: dup
+      15: iconst_0
+      16: aload_0
+      17: getfield      #78                 // Field works:Ljava/lang/String;
+      20: aastore
+      21: invokevirtual #218                // Method cam72cam/immersiverailroading/library/GuiText.toString:([Ljava/lang/Object;)Ljava/lang/String;
+      24: invokeinterface #224,  2          // InterfaceMethod java/util/List.add:(Ljava/lang/Object;)Z
+      29: pop
+      30: aload_0
+      31: getfield      #98                 // Field isCabCar:Z
+      34: ifne          228
+      37: getstatic     #230                // Field cam72cam/immersiverailroading/ConfigGraphics.powerUnit:Lcam72cam/immersiverailroading/library/unit/PowerDisplayType;
+      40: aload_0
+      41: aload_1
+      42: invokevirtual #234                // Method getWatt:(Lcam72cam/immersiverailroading/library/Gauge;)F
+      45: invokevirtual #240                // Method cam72cam/immersiverailroading/library/unit/PowerDisplayType.convertFromWatt:(F)F
+      48: fstore_3
+      49: ldc           #242                // String %.0f
+      51: iconst_1
+      52: anewarray     #214                // class java/lang/Object
+      55: dup
+      56: iconst_0
+      57: fload_3
+      58: invokestatic  #246                // Method java/lang/Float.valueOf:(F)Ljava/lang/Float;
+      61: aastore
+      62: invokestatic  #252                // Method java/lang/String.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;
+      65: astore        4
+      67: aload_2
+      68: getstatic     #255                // Field cam72cam/immersiverailroading/library/GuiText.LOCO_POWER:Lcam72cam/immersiverailroading/library/GuiText;
+      71: iconst_1
+      72: anewarray     #214                // class java/lang/Object
+      75: dup
+      76: iconst_0
+      77: aload         4
+      79: aastore
+      80: invokevirtual #218                // Method cam72cam/immersiverailroading/library/GuiText.toString:([Ljava/lang/Object;)Ljava/lang/String;
+      83: getstatic     #230                // Field cam72cam/immersiverailroading/ConfigGraphics.powerUnit:Lcam72cam/immersiverailroading/library/unit/PowerDisplayType;
+      86: invokevirtual #258                // Method cam72cam/immersiverailroading/library/unit/PowerDisplayType.toUnitString:()Ljava/lang/String;
+      89: invokestatic  #262                // Method jvmdowngrader$concat$getTooltip$1:(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+      92: invokeinterface #224,  2          // InterfaceMethod java/util/List.add:(Ljava/lang/Object;)Z
+      97: pop
+      98: getstatic     #266                // Field cam72cam/immersiverailroading/ConfigGraphics.forceUnit:Lcam72cam/immersiverailroading/library/unit/ForceDisplayType;
+     101: aload_0
+     102: aload_1
+     103: invokevirtual #269                // Method getStartingTractionNewtons:(Lcam72cam/immersiverailroading/library/Gauge;)F
+     106: invokevirtual #274                // Method cam72cam/immersiverailroading/library/unit/ForceDisplayType.convertFromNewton:(F)F
+     109: fstore        5
+     111: ldc           #242                // String %.0f
+     113: iconst_1
+     114: anewarray     #214                // class java/lang/Object
+     117: dup
+     118: iconst_0
+     119: fload         5
+     121: invokestatic  #246                // Method java/lang/Float.valueOf:(F)Ljava/lang/Float;
+     124: aastore
+     125: invokestatic  #252                // Method java/lang/String.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;
+     128: astore        6
+     130: aload_2
+     131: getstatic     #277                // Field cam72cam/immersiverailroading/library/GuiText.LOCO_TRACTION:Lcam72cam/immersiverailroading/library/GuiText;
+     134: iconst_1
+     135: anewarray     #214                // class java/lang/Object
+     138: dup
+     139: iconst_0
+     140: aload         6
+     142: aastore
+     143: invokevirtual #218                // Method cam72cam/immersiverailroading/library/GuiText.toString:([Ljava/lang/Object;)Ljava/lang/String;
+     146: getstatic     #266                // Field cam72cam/immersiverailroading/ConfigGraphics.forceUnit:Lcam72cam/immersiverailroading/library/unit/ForceDisplayType;
+     149: invokevirtual #278                // Method cam72cam/immersiverailroading/library/unit/ForceDisplayType.toUnitString:()Ljava/lang/String;
+     152: invokestatic  #262                // Method jvmdowngrader$concat$getTooltip$1:(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+     155: invokeinterface #224,  2          // InterfaceMethod java/util/List.add:(Ljava/lang/Object;)Z
+     160: pop
+     161: getstatic     #282                // Field cam72cam/immersiverailroading/ConfigGraphics.speedUnit:Lcam72cam/immersiverailroading/library/unit/SpeedDisplayType;
+     164: aload_0
+     165: aload_1
+     166: invokevirtual #286                // Method getMaxSpeed:(Lcam72cam/immersiverailroading/library/Gauge;)Lcam72cam/immersiverailroading/util/Speed;
+     169: invokevirtual #289                // Method cam72cam/immersiverailroading/util/Speed.metric:()D
+     172: invokevirtual #294                // Method cam72cam/immersiverailroading/library/unit/SpeedDisplayType.convertFromKmh:(D)D
+     175: d2f
+     176: fstore        7
+     178: ldc           #242                // String %.0f
+     180: iconst_1
+     181: anewarray     #214                // class java/lang/Object
+     184: dup
+     185: iconst_0
+     186: fload         7
+     188: invokestatic  #246                // Method java/lang/Float.valueOf:(F)Ljava/lang/Float;
+     191: aastore
+     192: invokestatic  #252                // Method java/lang/String.format:(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;
+     195: astore        8
+     197: aload_2
+     198: getstatic     #297                // Field cam72cam/immersiverailroading/library/GuiText.LOCO_MAX_SPEED:Lcam72cam/immersiverailroading/library/GuiText;
+     201: iconst_1
+     202: anewarray     #214                // class java/lang/Object
+     205: dup
+     206: iconst_0
+     207: aload         8
+     209: aastore
+     210: invokevirtual #218                // Method cam72cam/immersiverailroading/library/GuiText.toString:([Ljava/lang/Object;)Ljava/lang/String;
+     213: getstatic     #282                // Field cam72cam/immersiverailroading/ConfigGraphics.speedUnit:Lcam72cam/immersiverailroading/library/unit/SpeedDisplayType;
+     216: invokevirtual #298                // Method cam72cam/immersiverailroading/library/unit/SpeedDisplayType.toUnitString:()Ljava/lang/String;
+     219: invokestatic  #262                // Method jvmdowngrader$concat$getTooltip$1:(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+     222: invokeinterface #224,  2          // InterfaceMethod java/util/List.add:(Ljava/lang/Object;)Z
+     227: pop
+     228: aload_2
+     229: areturn
+
+  public float getHorsePower(cam72cam.immersiverailroading.library.Gauge);
+    Code:
+       0: aload_1
+       1: invokevirtual #316                // Method cam72cam/immersiverailroading/library/Gauge.scale:()D
+       4: aload_0
+       5: getfield      #100                // Field power_kW:D
+       8: dmul
+       9: ldc2_w        #317                // double 1.3410199880599976d
+      12: dmul
+      13: d2f
+      14: freturn
+
+  public float getWatt(cam72cam.immersiverailroading.library.Gauge);
+    Code:
+       0: aload_1
+       1: invokevirtual #316                // Method cam72cam/immersiverailroading/library/Gauge.scale:()D
+       4: aload_0
+       5: getfield      #100                // Field power_kW:D
+       8: dmul
+       9: ldc2_w        #319                // double 1000.0d
+      12: dmul
+      13: d2f
+      14: freturn
+
+  public float getStartingTractionNewtons(cam72cam.immersiverailroading.library.Gauge);
+    Code:
+       0: aload_1
+       1: invokevirtual #316                // Method cam72cam/immersiverailroading/library/Gauge.scale:()D
+       4: aload_0
+       5: getfield      #102                // Field traction_N:D
+       8: dmul
+       9: d2f
+      10: freturn
+
+  public cam72cam.immersiverailroading.util.Speed getMaxSpeed(cam72cam.immersiverailroading.library.Gauge);
+    Code:
+       0: aload_1
+       1: invokevirtual #316                // Method cam72cam/immersiverailroading/library/Gauge.scale:()D
+       4: aload_0
+       5: getfield      #109                // Field maxSpeed:Lcam72cam/immersiverailroading/util/Speed;
+       8: invokevirtual #323                // Method cam72cam/immersiverailroading/util/Speed.minecraft:()D
+      11: dmul
+      12: invokestatic  #326                // Method cam72cam/immersiverailroading/util/Speed.fromMinecraft:(D)Lcam72cam/immersiverailroading/util/Speed;
+      15: areturn
+
+  public boolean getRadioCapability();
+    Code:
+       0: aload_0
+       1: getfield      #92                 // Field hasRadioEquipment:Z
+       4: ireturn
+
+  public boolean isLinearBrakeControl();
+    Code:
+       0: aload_0
+       1: invokevirtual #330                // Method isLinkedBrakeThrottle:()Z
+       4: ifne          14
+       7: aload_0
+       8: invokespecial #332                // Method cam72cam/immersiverailroading/registry/FreightDefinition.isLinearBrakeControl:()Z
+      11: ifeq          18
+      14: iconst_1
+      15: goto          19
+      18: iconst_0
+      19: ireturn
+
+  public boolean isLinkedBrakeThrottle();
+    Code:
+       0: aload_0
+       1: getfield      #183                // Field isLinkedBrakeThrottle:Z
+       4: ireturn
+
+  public boolean isCabCar();
+    Code:
+       0: aload_0
+       1: getfield      #98                 // Field isCabCar:Z
+       4: ireturn
+
+  public boolean isCog();
+    Code:
+       0: aload_0
+       1: getfield      #191                // Field isCog:Z
+       4: ireturn
+
+  public double factorOfAdhesion();
+    Code:
+       0: aload_0
+       1: getfield      #113                // Field factorOfAdhesion:D
+       4: dreturn
+
+  private static java.lang.String jvmdowngrader$concat$getTooltip$1(java.lang.String, java.lang.String);
+    Code:
+       0: new           #334                // class java/lang/StringBuilder
+       3: dup
+       4: invokespecial #337                // Method java/lang/StringBuilder."<init>":()V
+       7: aload_0
+       8: invokevirtual #341                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+      11: ldc_w         #343                // String
+      14: invokevirtual #341                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+      17: aload_1
+      18: invokevirtual #341                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+      21: invokevirtual #345                // Method java/lang/StringBuilder.toString:()Ljava/lang/String;
+      24: areturn
+}

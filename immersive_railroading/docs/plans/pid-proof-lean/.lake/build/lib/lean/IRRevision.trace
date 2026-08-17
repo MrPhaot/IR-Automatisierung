@@ -1,0 +1,33 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["f11d372877c3fe85.olean"],
+  "m": false,
+  "i": "4fa6ad0104b14223.ilean",
+  "c": "3b0307a74017fd8d.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean /home/mrphaot/.elan/toolchains/leanprover--lean4---v4.33.0/bin/lean /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/IRRevision.lean -o /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRRevision.olean -i /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/lib/lean/IRRevision.ilean -c /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/ir/IRRevision.c --setup /home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/.lake/build/ir/IRRevision.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["«ir-proof»/IRRevision:extraDep",
+     [["@«ir-proof»:extraDep", "00000000000006bb"]]],
+    ["imports",
+     [["IRProof transitive imports (legacy)", "00000000000006bb"],
+      ["IRProof:importAllArts", "ba26921acfe01aa8"]]]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.33.0, commit d8b18978322de05a8f3dba51ef03cf5461676c17",
+   "3eca9d16ab6c877d"],
+  ["/home/mrphaot/Dokumente/lua/minecraft/immersive_railroading/docs/plans/pid-proof-lean/IRRevision.lean",
+   "40bff969f58606eb"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: IRRevision", "24dd837f9e6395dc"],
+  ["Package.id?: (some ir-proof)", "f812aea9e6d32deb"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "87e86abf3aaaf81f"}

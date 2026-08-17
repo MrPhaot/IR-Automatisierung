@@ -146,3 +146,16 @@ Erstelle einen Plan:
 2. Orientiere dich an die neuesten Pläne unter factorio-schedule-v1 wie [PLAN23.md](immersive_railroading/docs/plans/factorio-schedule-v1/PLAN23.md) , um zu sehen, wie der Standard für Ausführlichkeit nach Situation aussieht. 
 2.1. Füge auf jeden Fall Akzeptanz-Kriterien und durchdachte, im Sandbox/mithilfe des Emulators getestete Codestücke (falls du es im Planungsmodus nicht schaffst, könntest du deinerseits das Verhalten des ganzen Systems aus dem Emulator und gar der .jar-Datei herleiten und deine Code-Vorschläge selber durch statische Analyse überprüfen).
 3. Iteriere solange, bis der Plan ausgereift ist und unbedingt meine Einschätzung braucht. Bis dahin arbeite ihn mit vorherigen Schritten heraus. Lasse nur dann Messages, wenn ich etwas Wichtiges über den Fortschritt wissen muss/es hat seit dem letzten Message lange Zeit gedauert; spare Tokens.
+
+---
+TODO:
+(-in ZUkunft: indivduelle Detektorauswahl)
+- lua Programm muss einen Config-Parser haben, um konfigurierbare Werte auslesen zu können.
+- 1. Minimaler (fast fertiger) Beweis 2. nicht 0 Throttle 3. 
+
+geometry/topology:
+- for arc lenghts we can achieve greater precision with gauß-legendre technique. Nodes and weigths can be precomputed and then looked up in runtime. A realistic degree of gauß-legendre-quadrature (and therefore precision) is 7 or 6. MOST IMPORTANTLY, our method has to be equal or greater in precision than lengthWithCache and lengthInBetween. THIS has to be proven.
+- crossings are achieved through overlapping tracks, not with BuilderCrossing. This source item can be disregarded.
+- as far as I know (means: NEEDS TO BE CHECKED), RailInfo, MovementTrack, TileRailBase, ITrack (and other metadata) cannot be extracted uniquely for each ingame track/tile at runtime. We have to reconstruct those from available data to the tracer.
+  - (!!!) here is an interesting angle to explore: track data has to be saved in the respective save-folder. If you can find the exact ways, Universal Mod Core and TrackAPI extract this data from the save, we can build our own extractor. If this data represents the track how it is fully defined in the mod, we don't need a tracer. (!!!)
+- 4.3 "two different Bézier control polygons with the same finite samples" is this not possible because the bezier curves live in an absolute space and, therefore, each bezier has a unique set of points (otherwise it's the same bezier)? Or is this not guaranteed?

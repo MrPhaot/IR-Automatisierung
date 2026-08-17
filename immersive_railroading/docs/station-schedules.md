@@ -33,9 +33,14 @@ Routes are directed station edges. Prefer `from`, `to`, and `via`; legacy `waypo
 Supported condition types:
 - `time_passed`
 - `inactivity`
+- `arrived_at_station`
 - `passengers`
 - `fluid_percent`
 - `cargo_percent`
+
+`arrived_at_station` completes when the active wait station matches the rule's `station` field.
+The station must be one of the schedule's entry stations (resolved from `entry.station` or the
+route terminal `route.to`). No detector read is involved.
 
 Detector scopes (per-station, chosen via the editor's two-stage Scope picker):
 - All detectors of a station: `{station_id = "<id>", all_detectors = true}`
@@ -61,13 +66,21 @@ V1 does not use `ir_remote_control.consist()` for wagon waits.
 
 Stations define named outputs under `STATIONS[id].redstone_outputs`.
 
-Allowed condition modes:
+Each redstone rule now supports `signal` and `pulse_ticks`:
+- `signal`: `"pulse"` (one-shot on rising edge) or `"constant"` (held while rule groups complete)
+- `pulse_ticks`: optional per-rule pulse duration (ticks); falls back to the output's configured
+  `pulse_ticks` at runtime
+
+Condition modes on wait conditions (legacy):
 - `while_pending`
 - `on_departure_pulse`
 
-Meaning:
-- `while_pending` stays active while a referencing condition remains false
-- `on_departure_pulse` fires one pulse when the wait completes and the train departs
+Rule signal semantics:
+- `constant` → output held active while the rule's DNF groups evaluate to complete (reuses
+  `pending_outputs`)
+- `pulse` → one-shot pulse (duration = `rule.pulse_ticks` or output's `pulse_ticks`) on the
+  rising edge of rule-group completion. In-flight arrival pulses are terminated by departure
+  `shutdown`; this is acceptable because the pulse already started on the rising edge.
 
 The Schedule editor's redstone-rule output picker offers the **union** of `redstone_outputs`
 across every entry station (so a rule may bind an output defined on any entry's station). Stations

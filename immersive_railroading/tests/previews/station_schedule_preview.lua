@@ -132,4 +132,223 @@ local split_tick1 = schedule.tick_wait_session(split_session, 14)
 assert(split_tick1.complete == true, "wait chain should complete on its own schedule")
 assert(split_tick1.pending_outputs.loader == nil, "schedule redstone outputs should shut down once wait completes")
 
+do
+  local book2 = {
+    STATIONS = {
+      x = {detector_ids = {"a", "b", "c"}, redstone_outputs = {out = {}}},
+    },
+    ROUTES = {},
+    SCHEDULES = {
+      probe = {
+        entries = {
+          {
+            station = "x",
+            wait = {
+              groups = {
+                {
+                  {
+                    type = "cargo_percent",
+                    scope = {station_id = "x", detector_ids = {"a", "b"}},
+                    comparator = "<=",
+                    value = 5,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  local valid_probe = schedule.validate(book2, "probe")
+  assert(valid_probe.ok == true, "per-station detector-set scope with explicit station should validate")
+
+  local probe_entry = book2.SCHEDULES.probe.entries[1]
+  local session = schedule.create_wait_session(book2, "x", probe_entry.wait, function()
+    return _G.__probe_samples or {}
+  end)
+  _G.__probe_samples = {a = {info = {cargo_percent = 90}}, b = {info = {cargo_percent = 90}}, c = {info = {cargo_percent = 4}}}
+  local tick_incomplete = schedule.tick_wait_session(session, 0)
+  assert(tick_incomplete.complete == false, "detector-set scope should resolve to only the named detectors (OR)")
+  _G.__probe_samples = {a = {info = {cargo_percent = 4}}, b = {info = {cargo_percent = 90}}, c = {info = {cargo_percent = 90}}}
+  local tick_complete = schedule.tick_wait_session(session, 5)
+  assert(tick_complete.complete == true, "detector-set scope should complete when a named detector matches")
+end
+
+do
+  local book3 = {
+    STATIONS = {x = {detector_ids = {"a"}, redstone_outputs = {out = {}}}},
+    ROUTES = {},
+    SCHEDULES = {
+      legacy = {
+        entries = {
+          {
+            station = "x",
+            wait = {
+              groups = {
+                {
+                  {
+                    type = "cargo_percent",
+                    scope = {all_detectors = true},
+                    comparator = ">=",
+                    value = 1,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  local v = schedule.validate(book3, "legacy")
+  assert(v.ok == true, "legacy-normalized scope with nil station_id should still validate")
+end
+
+do
+  local book4 = {
+    STATIONS = {
+      a = {detector_ids = {}, redstone_outputs = {out_a = {}}},
+      b = {detector_ids = {}, redstone_outputs = {out_b = {}}},
+    },
+    ROUTES = {},
+    SCHEDULES = {
+      multi = {
+        entries = {
+          {
+            station = "a",
+            wait = {groups = {{{type = "time_passed", seconds = 0}}}},
+            redstone = {rules = {{output = "out_b", groups = {{{type = "time_passed", seconds = 0}}}}}},
+          },
+          {station = "b", wait = {groups = {{{type = "time_passed", seconds = 0}}}}},
+        },
+      },
+    },
+  }
+  local v = schedule.validate(book4, "multi")
+  assert(v.ok == true, "redstone rule may reference any entry-station output via the union")
+end
+
+do
+  local book5 = {
+    STATIONS = {
+      a = {detector_ids = {}, redstone_outputs = {out_a = {}}},
+      b = {detector_ids = {}, redstone_outputs = {out_b = {}}},
+    },
+    ROUTES = {
+      to_a = {waypoints = {"x", "a"}},
+      to_b = {waypoints = {"x", "b"}},
+    },
+    SCHEDULES = {
+      arrival = {
+        entries = {
+          {route = "to_a", station = "a", wait = {groups = {{{type = "time_passed", seconds = 0}}}}},
+          {route = "to_b", station = "b", wait = {groups = {{{type = "time_passed", seconds = 0}}}}},
+        },
+      },
+    },
+  }
+  local valid_arrival = schedule.validate(book5, "arrival")
+  assert(valid_arrival.ok == true, "arrived_at_station with entry station should validate")
+
+  local invalid_arrival_book = {
+    STATIONS = {
+      a = {detector_ids = {}, redstone_outputs = {}},
+      z = {detector_ids = {}, redstone_outputs = {}},
+    },
+    ROUTES = {
+      to_a = {waypoints = {"x", "a"}},
+      to_z = {waypoints = {"x", "z"}},
+    },
+    SCHEDULES = {
+      bad = {
+        entries = {
+          {route = "to_a", station = "a", wait = {groups = {{{type = "arrived_at_station", station = "z"}}}}},
+        },
+      },
+    },
+  }
+  local invalid_arrival = schedule.validate(invalid_arrival_book, "bad")
+  assert(invalid_arrival.ok == false, "arrived_at_station with non-entry station should fail validation")
+end
+
+do
+  local book6 = {
+    STATIONS = {
+      a = {detector_ids = {}, redstone_outputs = {out = {pulse_ticks = 10}}},
+    },
+    ROUTES = {
+      dummy = {waypoints = {"x", "a"}},
+    },
+    SCHEDULES = {
+      pulse_rule = {
+        entries = {
+          {
+            route = "dummy",
+            station = "a",
+            wait = {groups = {{{type = "time_passed", seconds = 1}}}},
+            redstone = {
+              rules = {
+                {output = "out", signal = "pulse", pulse_ticks = 15, groups = {{{type = "arrived_at_station", station = "a"}}}},
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  local v = schedule.validate(book6, "pulse_rule")
+  assert(v.ok == true, "redstone rule with signal=pulse and pulse_ticks should validate")
+
+  local session = schedule.create_wait_session(book6, "a", book6.SCHEDULES.pulse_rule.entries[1], function() return {} end)
+  local tick0 = schedule.tick_wait_session(session, 0)
+  assert(tick0.arrival_pulses ~= nil, "arrival_pulses should be present")
+  assert(#tick0.arrival_pulses == 1, "pulse should fire on first evaluation")
+  assert(tick0.arrival_pulses[1].name == "out", "pulse should target the correct output")
+  assert(tick0.arrival_pulses[1].config.pulse_ticks == 15, "per-rule pulse_ticks should override output default")
+
+  local tick1 = schedule.tick_wait_session(session, 1)
+  assert(#(tick1.arrival_pulses or {}) == 0, "pulse should not re-fire on second evaluation (rising edge)")
+end
+
+do
+  local book7 = {
+    STATIONS = {
+      a = {detector_ids = {}, redstone_outputs = {out = {}}},
+      b = {detector_ids = {}, redstone_outputs = {out = {}}},
+    },
+    ROUTES = {
+      dummy_a = {waypoints = {"x", "a"}},
+      dummy_b = {waypoints = {"x", "b"}},
+    },
+    SCHEDULES = {
+      multi_arrival = {
+        entries = {
+          {
+            route = "dummy_a",
+            station = "a",
+            wait = {groups = {{{type = "time_passed", seconds = 1}}}},
+            redstone = {
+              rules = {
+                {output = "out", signal = "pulse", groups = {{{type = "arrived_at_station", station = "a"}}}},
+              },
+            },
+          },
+          {
+            route = "dummy_b",
+            station = "b",
+            wait = {groups = {{{type = "time_passed", seconds = 1}}}},
+          },
+        },
+      },
+    },
+  }
+  local v = schedule.validate(book7, "multi_arrival")
+  assert(v.ok == true, "arrived_at_station with multiple entries should validate")
+
+  local session_a = schedule.create_wait_session(book7, "a", book7.SCHEDULES.multi_arrival.entries[1], function() return {} end)
+  local tick_a = schedule.tick_wait_session(session_a, 0)
+  assert(#(tick_a.arrival_pulses or {}) == 1, "pulse should fire when arrived at matching entry station")
+end
+
 print("station_schedule_preview ok")

@@ -1,0 +1,149 @@
+You are the proof-repair and proof-authoring agent for this repository.
+
+Implement the base specification in:
+
+`immersive_railroading/docs/plans/PLAN_NEWPROOF.md`
+
+and the mandatory corrective supplement in:
+
+`immersive_railroading/docs/plans/PLAN_NEWPROOF_REVISION.md`
+
+Read both files completely before acting. Where they differ, the revision
+takes precedence. Treat all artifacts from the previous implementation as
+untrusted, even if they compile or claim readiness. Do not modify either plan.
+
+Do not modify:
+
+- `immersive_railroading/programs/train_controller.lua`;
+- any production Lua file;
+- unrelated dirty-worktree changes.
+
+You may inspect Lua and document exact future changes required. Stop after the
+proof artifacts, audit, implementation contract, tests, and readiness report
+are complete.
+
+## Ralph execution mode
+
+This prompt is executed by a bounded fresh-context Ralph loop. The outer runner
+supplies one of these modes:
+
+```text
+PLAN_AUDIT
+PLAN_REPAIR
+PLAN_HANDOFF_CHECK
+BASELINE
+IMPLEMENT
+IMPLEMENT_AUDIT
+FINAL_AUDIT
+```
+
+If no mode is supplied, default to `IMPLEMENT`.
+
+At the start of every iteration, reread:
+
+- `immersive_railroading/AGENTS.md`;
+- `PLAN_NEWPROOF.md`;
+- `PLAN_NEWPROOF_REVISION.md`;
+- this prompt;
+- the current task ledger;
+- the relevant proof and report files.
+
+Do not rely on previous conversation context or previous readiness reports.
+
+In `PLAN_AUDIT` mode, inspect the handoff specification read-only and report
+exactly one highest-priority defect. In `PLAN_REPAIR` mode, repair only that
+defect and no unrelated requirement. In `PLAN_HANDOFF_CHECK` mode, perform a
+fresh read-only check and emit `PLAN_HANDOFF_READY` only when the plan is
+internally consistent and decision-complete.
+
+In `BASELINE` mode, record the current build, warning, axiom, provenance,
+forbidden-mechanism, and readiness state without inheriting previous claims.
+
+In `IMPLEMENT` mode, select exactly one pending task whose dependencies are
+complete. Implement only that task, run its checks, update
+`pid-implementation-plan.md`, and stop.
+
+In `IMPLEMENT_AUDIT` or `FINAL_AUDIT` mode, do not modify repository files.
+Inspect the implementation, rerun the relevant checks, and report every defect
+or unsupported claim.
+
+After three failed attempts at one item, emit `BLOCKED`. Never weaken a
+requirement to obtain `DONE`.
+
+Use these completion signals:
+
+```text
+<promise>PLAN_HANDOFF_READY</promise>
+<promise>ITERATION_COMPLETE</promise>
+<promise>BLOCKED</promise>
+<promise>DONE</promise>
+```
+
+Use a maximum of 12 plan-refinement iterations, 40 implementation iterations,
+and 3 retries for one defect or task. `DONE` is permitted only in
+`FINAL_AUDIT` mode after all tasks are verified, Gates A–I pass, and a fresh
+read-only final audit agrees with the readiness report.
+
+Do not modify production Lua, either base plan, or the base prompt. Do not
+modify proof artifacts in read-only audit modes. Do not create automatic
+commits.
+
+In addition to the base requirements, this revision requires a compiled,
+nontrivial Lean theorem for:
+
+```text
+validated spline geometry → directed routing edge
+```
+
+The theorem must prove forward/reverse orientation, endpoint correspondence,
+interval-coordinate correctness, and preservation of the localization error
+bound. Report its theorem name, dependencies, `#print axioms` output, LaTeX
+citation, and mutation-test result. Apply the same producer/consumer theorem
+pattern to every other funnel arrow.
+
+Implement the source-connected geometry, profile, physics, controller, plant,
+arrival, timing, and fail-closed requirements in both documents. In
+particular:
+
+- do not use arbitrary caller-supplied certificates as proof of their own
+  validity;
+- do not replace unknown physical values with zero or neutral defaults;
+- separate dynamic `info()` data, static definition/catalogue data, global
+  configuration, and runtime certificates;
+- derive the force model and particle transition from Java-8 root bytecode;
+- connect controller commands to the actual IR plant transition and next state;
+- prove terminal arrival separately from no-crossing safety;
+- distinguish deterministic jar timing from measured external runtime latency;
+- run source-adapter, geometry, controller, transition, and timing mutations,
+  not only abstract arithmetic mutations.
+
+Apply Gates A–I from the base plan and the gate-specific debugging procedures
+from the revision. For every gate, record:
+
+- the reproducer or command;
+- the producer-to-consumer boundary;
+- the expected and actual result;
+- the premise-removal or mutation result;
+- the final classification and remediation.
+
+Do not mark a gate passed solely because Lean or LaTeX compiles. Report
+`NOT_READY` whenever a required source connection, physical bound, timing
+bound, or transition refinement is assumed, defaulted, excluded for
+convenience, or disconnected.
+
+Run at minimum:
+
+```bash
+lake build
+lake env lean Axioms.lean
+rg -n 'sorry|admit|axiom|opaque|unsafe|cast|ofReduceBool' immersive_railroading/docs/plans/pid-proof-lean
+```
+
+Update only the proof and planning artifacts required by the plans. The final
+report must classify every result as proved by Lean, derived from bytecode, a
+certified model assumption, a runtime contract, a future Lua implementation
+obligation, or unsupported/withdrawn.
+
+Report `READY_FOR_USER_APPROVAL` only after every required funnel arrow,
+physical branch, controller transition, arrival theorem, runtime contract,
+and adversarial gate is genuinely established.
